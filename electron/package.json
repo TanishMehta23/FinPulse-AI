@@ -1,10 +1,10 @@
 {
-  "name": "finpulse-ai",
+  "name": "finpulse-electron",
   "version": "1.0.0",
-  "description": "FinPulse AI Desktop Tool",
-  "main": "electron/main.js",
+  "description": "FinPulse AI Desktop App",
+  "main": "main.js",
   "scripts": {
-    "electron": "electron .",
+    "start": "electron .",
     "dist": "electron-builder"
   },
   "devDependencies": {
@@ -18,12 +18,14 @@
       "output": "release"
     },
     "files": [
-      "electron/**/*",
+      "main.js",
+      "fp-icon.ico",
       "package.json"
     ],
     "win": {
       "target": "nsis",
-      "icon": "electron/fp-icon.ico"
+      "icon": "fp-icon.ico"
     }
   }
 }
+

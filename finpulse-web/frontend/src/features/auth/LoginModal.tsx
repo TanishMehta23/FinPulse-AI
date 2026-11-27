@@ -58,6 +58,25 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
             localStorage.setItem('finpulse-user', JSON.stringify(data.user));
             setUser(data.user);
 
+            if (data.isNewUser && data.user?.email) {
+              fetch('https://api.emailjs.com/api/v1.0/email/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  service_id: import.meta.env.VITE_EMAILJS_SERVICE_ID,
+                  template_id: import.meta.env.VITE_EMAILJS_WELCOME_TEMPLATE_ID,
+                  user_id: import.meta.env.VITE_EMAILJS_PUBLIC_KEY,
+                  template_params: {
+                    to_email: data.user.email,
+                    email: data.user.email,
+                    user_email: data.user.email,
+                    to_name: data.user.name || data.user.email.split('@')[0],
+                    name: data.user.name || data.user.email.split('@')[0],
+                  },
+                }),
+              }).catch(() => {});
+            }
+
             if (data.hasPin) {
               sessionStorage.setItem('finpulse_pin_verified', 'true');
               onLoginSuccess();
@@ -195,6 +214,24 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
           localStorage.setItem('finpulse-user', JSON.stringify(data.user));
           setUser(data.user);
           setProfileUserId(data.user.id);
+          if (data.user?.email) {
+            fetch('https://api.emailjs.com/api/v1.0/email/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                service_id: import.meta.env.VITE_EMAILJS_SERVICE_ID,
+                template_id: import.meta.env.VITE_EMAILJS_WELCOME_TEMPLATE_ID,
+                user_id: import.meta.env.VITE_EMAILJS_PUBLIC_KEY,
+                template_params: {
+                  to_email: data.user.email,
+                  email: data.user.email,
+                  user_email: data.user.email,
+                  to_name: data.user.name || data.user.email.split('@')[0],
+                  name: data.user.name || data.user.email.split('@')[0],
+                },
+              }),
+            }).catch(() => {});
+          }
           setStep('profile-setup');
         } else {
           if (data.hasPin) {
@@ -447,6 +484,19 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
               localStorage.setItem('finpulse_token', data.token);
               localStorage.setItem('finpulse-user', JSON.stringify(data.user));
               setUser(data.user);
+              if (data.user?.preferences) {
+                try {
+                  const prefs = typeof data.user.preferences === 'string' ? JSON.parse(data.user.preferences) : data.user.preferences;
+                  if (prefs?.theme) {
+                    localStorage.setItem('theme', prefs.theme);
+                    if (prefs.theme === 'dark') {
+                      document.documentElement.classList.add('dark');
+                    } else if (prefs.theme === 'light') {
+                      document.documentElement.classList.remove('dark');
+                    }
+                  }
+                } catch {}
+              }
               sessionStorage.setItem('finpulse_pin_verified', 'true');
               setIsSuccess(true);
               // Wait 800ms for verification success animation to show
@@ -565,7 +615,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
                         type="text"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
-                        placeholder="John Doe"
                         className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-white/[0.02] px-4 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:border-blue-500 dark:focus:border-cyan-400 focus:outline-none transition-colors"
                       />
                     </div>
@@ -579,7 +628,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="name@example.com"
                       required
                       className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-white/[0.02] px-4 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:border-blue-500 dark:focus:border-cyan-400 focus:outline-none transition-colors"
                     />
@@ -593,7 +641,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••"
                       required
                       className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-white/[0.02] px-4 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:border-blue-500 dark:focus:border-cyan-400 focus:outline-none transition-colors"
                     />
@@ -748,7 +795,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="name@example.com"
                       className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-white/[0.02] px-4 py-3 text-sm text-slate-900 dark:text-white focus:border-blue-500 dark:focus:border-cyan-400 focus:outline-none transition-colors"
                     />
                   </div>
@@ -825,7 +871,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, onLogout }
                       required
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="••••••••"
                       className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-white/[0.02] px-4 py-3 text-sm text-slate-900 dark:text-white focus:border-blue-500 dark:focus:border-cyan-400 focus:outline-none transition-colors"
                     />
                   </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { ArrowUpRight, ArrowDownRight, Globe, DollarSign, TrendingUp, PieChart, Plus, X, Bitcoin, Loader2, ChevronDown, Download, FileText, FileSpreadsheet, Activity } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, Globe, DollarSign, TrendingUp, PieChart, Plus, X, Bitcoin, Loader2, ChevronDown, Download, FileText, FileSpreadsheet, Activity, Search, ArrowUpDown, Filter } from 'lucide-react';
 import { BarChart3 } from "lucide-react";
 import { Link } from 'react-router-dom';
 import PortfolioAllocationChart from "./PortfolioAllocationChart";
@@ -89,7 +89,7 @@ const getHoldingColorClass = (marketId: string, ticker: string) => {
   const tick = (ticker || '').toUpperCase();
 
   if (mid === 'domestic' || tick.endsWith('.NS') || tick.endsWith('.BO')) {
-    return { bg: 'bg-blue-50 dark:bg-blue-950/40', text: 'text-blue-600 dark:text-blue-400', border: 'border-blue-200/50 dark:border-blue-900/50' };
+    return { bg: 'bg-emerald-50 dark:bg-emerald-950/40', text: 'text-emerald-600 dark:text-emerald-400', border: 'border-emerald-200/50 dark:border-emerald-900/50' };
   }
   if (mid === 'us') {
     return { bg: 'bg-emerald-50 dark:bg-emerald-950/40', text: 'text-emerald-600 dark:text-emerald-400', border: 'border-emerald-200/50 dark:border-emerald-900/50' };
@@ -101,9 +101,9 @@ const getHoldingColorClass = (marketId: string, ticker: string) => {
     return { bg: 'bg-yellow-50 dark:bg-yellow-950/40', text: 'text-yellow-600 dark:text-yellow-500', border: 'border-yellow-200/50 dark:border-yellow-900/50' };
   }
   if (mid === 'other') {
-    return { bg: 'bg-purple-50 dark:bg-purple-950/40', text: 'text-purple-600 dark:text-purple-400', border: 'border-purple-200/50 dark:border-purple-900/50' };
+    return { bg: 'bg-amber-50 dark:bg-amber-950/40', text: 'text-amber-600 dark:text-amber-400', border: 'border-amber-200/50 dark:border-amber-900/50' };
   }
-  return { bg: 'bg-indigo-50 dark:bg-indigo-950/40', text: 'text-indigo-600 dark:text-indigo-400', border: 'border-indigo-200/50 dark:border-indigo-900/50' };
+  return { bg: 'bg-rose-50 dark:bg-rose-950/40', text: 'text-rose-600 dark:text-rose-400', border: 'border-rose-200/50 dark:border-rose-900/50' };
 };
 
 export default function PortfolioDashboard() {
@@ -348,6 +348,12 @@ export default function PortfolioDashboard() {
   const [isClosingPosition, setIsClosingPosition] = useState(false);
   const [showExportDropdown, setShowExportDropdown] = useState(false);
 
+  // Holdings Filters
+  const [holdingSearch, setHoldingSearch] = useState('');
+  const [holdingFilterGain, setHoldingFilterGain] = useState<'all' | 'gainers' | 'losers'>('all');
+  const [holdingSortBy, setHoldingSortBy] = useState<'marketValue' | 'totalGain' | 'gainPercent' | 'dailyGain' | 'ticker'>('marketValue');
+  const [holdingSortOrder, setHoldingSortOrder] = useState<'asc' | 'desc'>('desc');
+
   // Debounced Search States
   const [assetSearch, setAssetSearch] = useState('');
   const [assetSuggestions, setAssetSuggestions] = useState<any[]>([]);
@@ -541,14 +547,20 @@ export default function PortfolioDashboard() {
     const initialize = async () => {
       const cached = sessionStorage.getItem("portfolioSections");
       if (cached) {
+        setLoading(false);
         loadPortfolioData(true);
-        timerId = setTimeout(() => {
-          setLoading(false);
-        }, 2000);
       } else {
         setLoading(true);
-        await loadPortfolioData(false);
-        setLoading(false);
+        // Ensure loader never hangs permanently even if backend is waking up from cold boot
+        timerId = setTimeout(() => {
+          setLoading(false);
+        }, 3500);
+        try {
+          await loadPortfolioData(false);
+        } finally {
+          setLoading(false);
+          if (timerId) clearTimeout(timerId);
+        }
       }
     };
 
@@ -562,14 +574,38 @@ export default function PortfolioDashboard() {
       clearInterval(interval);
       if (timerId) clearTimeout(timerId);
     };
-  }, [virtualHoldings, isSandboxMode]);
+  }, [isSandboxMode]);
 
   const handleAddAsset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedAsset || !shares || !cost) return;
+
+    const searchVal = assetSearch.trim();
+    const effectiveAsset = selectedAsset || (searchVal ? {
+      ticker: searchVal.split(' ')[0].replace(/[\(\)]/g, '').toUpperCase(),
+      yahooSymbol: searchVal.split(' ')[0].replace(/[\(\)]/g, '').toUpperCase(),
+      name: searchVal,
+      exchange: marketId === 'domestic' ? 'NSE' : 'US',
+      type: 'Equity'
+    } : null);
+
+    if (!effectiveAsset || !effectiveAsset.ticker) {
+      toast.error("Please search and select an asset or enter a valid symbol");
+      return;
+    }
 
     const numShares = parseFloat(shares);
     const numCost = parseFloat(cost);
+
+    if (isNaN(numShares) || numShares <= 0) {
+      toast.error("Please enter a valid quantity greater than 0");
+      return;
+    }
+
+    if (isNaN(numCost) || numCost < 0) {
+      toast.error("Please enter a valid average price");
+      return;
+    }
+
     setIsAddingAsset(true);
 
     try {
@@ -587,8 +623,8 @@ export default function PortfolioDashboard() {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          ticker: selectedAsset.ticker,
-          name: selectedAsset.name,
+          ticker: effectiveAsset.ticker,
+          name: effectiveAsset.name,
           shares: numShares,
           avgCost: numCost,
           marketId
@@ -596,7 +632,7 @@ export default function PortfolioDashboard() {
       });
 
       if (res.ok) {
-        toast.success(`Successfully added holding ${selectedAsset.ticker}`);
+        toast.success(`Successfully added holding ${effectiveAsset.ticker}`);
         loadPortfolioData();
         setIsModalOpen(false);
         setAssetSearch('');
@@ -604,7 +640,13 @@ export default function PortfolioDashboard() {
         setShares('');
         setCost('');
       } else {
-        toast.error("Failed to add position");
+        const errorData = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          toast.error("Please log in to add holdings to your portfolio");
+          window.dispatchEvent(new Event('finpulse:force-login'));
+        } else {
+          toast.error(errorData.error || "Failed to add position");
+        }
       }
     } catch (err) {
       console.error(err);
@@ -1044,9 +1086,15 @@ export default function PortfolioDashboard() {
       }, 0);
     }, 0);
 
-  const totalInvestedAmount = isSandboxMode
-    ? Math.max(totalHoldingsValue - totalGain, 0)
-    : Math.max(totalNetValue - totalGain, 0);
+  const totalInvestedAmount = currentSections
+    .filter(sec => activeMarket === 'all' || activeMarket === sec.id)
+    .reduce((sum, sec) => {
+      return sum + sec.holdings.reduce((sectionTotal, h) => {
+        const nativeCost = Math.abs(Number(h.shares) || 0) * (Number(h.avgCost) || 0);
+        const costUSD = sec.id === 'domestic' ? nativeCost / usdToInrRate : nativeCost;
+        return sectionTotal + (costUSD * currencyMultiplier);
+      }, 0);
+    }, 0);
 
   const totalBookedPL = useMemo(() => {
     return currentSections
@@ -1182,49 +1230,108 @@ export default function PortfolioDashboard() {
       return simulatedValues;
     }
 
-    return performanceData.map(d => ({
+    const convertedData = performanceData.map(d => ({
       ...d,
       value: d.value * currencyMultiplier,
       invested: d.invested * currencyMultiplier,
       profit: d.profit * currencyMultiplier
     }));
-  }, [performanceData, currencyMultiplier, isSandboxMode, virtualHoldings, liveQuotes, usdToInrRate]);
+
+    if (convertedData.length === 0) return convertedData;
+
+    const lastIndex = convertedData.length - 1;
+    return convertedData.map((point, index) => index === lastIndex
+      ? {
+        ...point,
+        value: isSandboxMode ? totalNetValue : totalHoldingsValue,
+        invested: totalInvestedAmount,
+        profit: (isSandboxMode ? totalNetValue : totalHoldingsValue) - totalInvestedAmount,
+      }
+      : point);
+  }, [performanceData, currencyMultiplier, isSandboxMode, virtualHoldings, liveQuotes, usdToInrRate, totalNetValue, totalHoldingsValue, totalInvestedAmount]);
+
+  const allocationData = useMemo(() => {
+    return currentSections
+      .map((section) => ({
+        name: section.title,
+        value: section.holdings.reduce((sum, h) => {
+          const valUSD = section.id === 'domestic' ? h.marketValue / usdToInrRate : h.marketValue;
+          return sum + (valUSD * currencyMultiplier);
+        }, 0),
+      }))
+      .filter((x) => x.value > 0);
+  }, [currentSections, usdToInrRate, currencyMultiplier]);
+
+  const allocationTotal = useMemo(() => {
+    return allocationData.reduce((sum, item) => sum + item.value, 0);
+  }, [allocationData]);
+
+  const dominantAllocation = useMemo(() => {
+    return allocationData.length > 0
+      ? [...allocationData].sort((a, b) => b.value - a.value)[0]
+      : null;
+  }, [allocationData]);
+
+  const filteredHoldings = useMemo(() => {
+    let holdings = currentSections
+      .filter((section) => activeMarket === 'all' || activeMarket === section.id)
+      .flatMap((section) =>
+        section.holdings
+          .filter(h => Math.abs(h.shares) > 0.0001)
+          .map(h => ({
+            ...h,
+            category: section.title,
+            sectionId: section.id,
+          }))
+      );
+
+    // Search filter
+    if (holdingSearch.trim()) {
+      const searchLower = holdingSearch.toLowerCase();
+      holdings = holdings.filter(h =>
+        h.ticker.toLowerCase().includes(searchLower) ||
+        h.name.toLowerCase().includes(searchLower)
+      );
+    }
+
+    // Gain/Loss filter
+    if (holdingFilterGain === 'gainers') {
+      holdings = holdings.filter(h => h.totalGain >= 0);
+    } else if (holdingFilterGain === 'losers') {
+      holdings = holdings.filter(h => h.totalGain < 0);
+    }
+
+    // Sort
+    holdings.sort((a, b) => {
+      let aVal: any = a[holdingSortBy];
+      let bVal: any = b[holdingSortBy];
+      
+      if (holdingSortBy === 'gainPercent') {
+        aVal = a.gainPercent;
+        bVal = b.gainPercent;
+      } else if (holdingSortBy === 'dailyGain') {
+        aVal = a.dailyGain || 0;
+        bVal = b.dailyGain || 0;
+      }
+
+      if (typeof aVal === 'string') {
+        aVal = aVal.toLowerCase();
+        bVal = bVal.toLowerCase();
+      }
+
+      if (holdingSortOrder === 'asc') {
+        return aVal > bVal ? 1 : -1;
+      } else {
+        return aVal < bVal ? 1 : -1;
+      }
+    });
+
+    return holdings;
+  }, [currentSections, activeMarket, holdingSearch, holdingFilterGain, holdingSortBy, holdingSortOrder]);
 
   if (loading) {
     return <PageLoader title="Loading Portfolio" message="Syncing asset allocations and latest transaction valuations..." />;
   }
-
-  const allocationData = currentSections
-    .map((section) => ({
-      name: section.title,
-      value: section.holdings.reduce((sum, h) => {
-        const valUSD = section.id === 'domestic' ? h.marketValue / usdToInrRate : h.marketValue;
-        return sum + (valUSD * currencyMultiplier);
-      }, 0),
-    }))
-    .filter((x) => x.value > 0);
-
-  const allocationTotal = allocationData.reduce(
-    (sum, item) => sum + item.value,
-    0
-  );
-
-  const dominantAllocation =
-    allocationData.length > 0
-      ? [...allocationData].sort((a, b) => b.value - a.value)[0]
-      : null;
-
-  const filteredHoldings = currentSections
-    .filter((section) => activeMarket === 'all' || activeMarket === section.id)
-    .flatMap((section) =>
-      section.holdings
-        .filter(h => Math.abs(h.shares) > 0.0001)
-        .map(h => ({
-          ...h,
-          category: section.title,
-          sectionId: section.id,
-        }))
-    );
 
   const exportPortfolioToCSV = (isExcel: boolean = false) => {
     const fileExt = isExcel ? "csv" : "csv";
@@ -1257,6 +1364,7 @@ export default function PortfolioDashboard() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    toast.success("Portfolio data exported successfully!");
   };
 
   const exportPortfolioToPDF = () => {
@@ -1415,7 +1523,7 @@ export default function PortfolioDashboard() {
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <div className="flex items-center gap-2 sm:gap-3 flex-nowrap">
-              <h1 className="text-xl sm:text-4xl font-black tracking-tight text-slate-900 dark:text-white font-display bg-gradient-to-r from-slate-900 to-slate-700 dark:from-white dark:to-slate-300 bg-clip-text text-transparent whitespace-nowrap">
+              <h1 className="text-xl sm:text-4xl font-black tracking-tight text-slate-900 dark:text-white font-display whitespace-nowrap">
                 {isSandboxMode ? 'Paper Sandbox' : 'Asset Portfolio'}
               </h1>
               <button
@@ -1434,20 +1542,22 @@ export default function PortfolioDashboard() {
             </p>
           </div>
 
-          <div className="hidden md:flex items-center gap-3">
+          <div className="flex items-center gap-3">
             {isSandboxMode ? (
               <button
                 onClick={() => setIsSandboxOpen(true)}
-                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 dark:from-purple-500 dark:to-indigo-600 px-5 py-2.5 text-xs font-bold text-white shadow-lg hover:shadow-purple-500/25 transition-all duration-300 min-h-[44px]"
+                className="portfolio-action-btn-sandbox flex items-center justify-center gap-2 rounded-2xl bg-purple-600 px-4 sm:px-5 py-2.5 text-xs font-black text-white shadow-lg transition-all duration-300 min-h-[44px]"
               >
-                <Plus className="h-3.5 w-3.5 stroke-[3]" /> Place Paper Trade
+                <Plus className="h-4 w-4 stroke-[3]" />
+                <span>Place Paper Trade</span>
               </button>
             ) : (
               <button
                 onClick={() => setIsModalOpen(true)}
-                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-cyan-500 dark:to-blue-600 px-5 py-2.5 text-xs font-bold text-white dark:text-night-950 shadow-lg hover:shadow-blue-500/25 transition-all duration-300 min-h-[44px]"
+                className="portfolio-action-btn flex items-center justify-center gap-2 rounded-2xl bg-blue-600 hover:bg-blue-700 px-4 sm:px-5 py-2.5 text-xs font-black text-white shadow-lg shadow-blue-600/30 transition-all duration-300 min-h-[44px]"
               >
-                <Plus className="h-3.5 w-3.5 stroke-[3]" /> Add Asset Position
+                <Plus className="h-4 w-4 stroke-[3]" />
+                <span>Add Asset Position</span>
               </button>
             )}
           </div>
@@ -1465,7 +1575,8 @@ export default function PortfolioDashboard() {
               <button
                 key={cur.code}
                 onClick={() => handleCurrencyChange(cur.code as any)}
-                className={`px-2.5 py-1 rounded-xl text-[9px] font-bold border transition-all whitespace-nowrap min-h-[30px] flex items-center justify-center ${portfolioCurrency === cur.code
+                aria-pressed={portfolioCurrency === cur.code}
+                className={`currency-selector ${portfolioCurrency === cur.code ? 'currency-selector-active' : ''} px-2.5 py-1 rounded-md text-[9px] font-bold border transition-all whitespace-nowrap min-h-[30px] flex items-center justify-center ${portfolioCurrency === cur.code
                   ? 'bg-blue-600 dark:bg-cyan-500 text-white dark:text-slate-950 border-transparent font-black shadow-sm'
                   : 'bg-slate-100 hover:bg-slate-200 dark:bg-white/[0.03] dark:hover:bg-white/[0.08] text-slate-655 dark:text-slate-400 border-slate-200 dark:border-white/5'
                   }`}
@@ -1539,14 +1650,14 @@ export default function PortfolioDashboard() {
         {isSandboxMode ? (
           <button
             onClick={() => setIsSandboxOpen(true)}
-            className="flex items-center justify-center h-14 w-14 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-2xl active:scale-95 transition-all"
+            className="portfolio-fab-btn-sandbox flex items-center justify-center h-14 w-14 rounded-full text-white shadow-2xl active:scale-95 transition-all"
           >
             <Plus className="h-6 w-6 stroke-[3]" />
           </button>
         ) : (
           <button
             onClick={() => setIsModalOpen(true)}
-            className="flex items-center justify-center h-14 w-14 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-cyan-500 dark:to-blue-600 text-white dark:text-night-950 shadow-2xl active:scale-95 transition-all"
+            className="portfolio-fab-btn flex items-center justify-center h-14 w-14 rounded-full text-white shadow-2xl active:scale-95 transition-all"
           >
             <Plus className="h-6 w-6 stroke-[3]" />
           </button>
@@ -1571,7 +1682,7 @@ export default function PortfolioDashboard() {
         </div>
 
         <div className="glass-panel p-3 sm:p-4 flex items-center gap-2.5 sm:gap-3 hover:border-slate-350 dark:hover:border-slate-850 hover:shadow-lg transition-all duration-300 min-w-0">
-          <div className="flex p-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-455 shrink-0">
+          <div className="flex p-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
             <TrendingUp className="h-5 w-5" />
           </div>
           <div className="min-w-0 w-full text-left">
@@ -1579,7 +1690,7 @@ export default function PortfolioDashboard() {
               <span className="hidden sm:inline">Total Returns</span>
               <span className="inline sm:hidden">Returns</span>
             </p>
-            <h3 className={`text-sm sm:text-2xl font-black mt-0.5 truncate ${totalGain >= 0 ? 'text-emerald-600 dark:text-emerald-450' : 'text-rose-500'}`}>
+            <h3 className={`text-sm sm:text-2xl font-black mt-0.5 truncate ${totalGain >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
               {totalGain >= 0 ? '+' : ''}{displayCurrency}{totalGain.toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </h3>
           </div>
@@ -1597,7 +1708,7 @@ export default function PortfolioDashboard() {
               <span className="hidden sm:inline">Booked P&L</span>
               <span className="inline sm:hidden">Booked</span>
             </p>
-            <h3 className={`text-sm sm:text-2xl font-black mt-0.5 truncate ${totalBookedPL >= 0 ? 'text-emerald-600 dark:text-emerald-450' : 'text-rose-500'}`}>
+            <h3 className={`text-sm sm:text-2xl font-black mt-0.5 truncate ${totalBookedPL >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
               {totalBookedPL >= 0 ? '+' : ''}{displayCurrency}{totalBookedPL.toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </h3>
           </div>
@@ -1660,10 +1771,99 @@ export default function PortfolioDashboard() {
             <p className="text-xs text-slate-400 dark:text-slate-500">Live holdings index list across active categories.</p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <span className="rounded-full bg-blue-500/10 dark:bg-cyan-500/10 px-3 py-1 text-xs font-bold text-blue-600 dark:text-cyan-400">
               {filteredHoldings.length} Positions
             </span>
+
+            {isSandboxMode ? (
+              <button
+                onClick={() => setIsSandboxOpen(true)}
+                className="portfolio-action-btn-sandbox inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-purple-600 text-white text-xs font-black transition-all shadow-sm"
+              >
+                <Plus className="h-3.5 w-3.5 stroke-[3]" />
+                <span>Place Trade</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setIsModalOpen(true)}
+                className="portfolio-action-btn inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black transition-all shadow-sm shadow-blue-600/25"
+              >
+                <Plus className="h-3.5 w-3.5 stroke-[3]" />
+                <span>Add Position</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Holdings Filter Bar */}
+        <div className="p-3.5 sm:p-4 bg-slate-50/50 dark:bg-white/[0.02] border-b border-slate-100 dark:border-slate-800/60 flex flex-col sm:flex-row gap-2.5 sm:gap-3 items-stretch sm:items-center justify-between">
+          {/* Search Input */}
+          <div className="relative flex-1 min-w-[200px] max-w-full sm:max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 dark:text-slate-500 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search by symbol or name..."
+              value={holdingSearch}
+              onChange={(e) => setHoldingSearch(e.target.value)}
+              className="w-full pl-9 pr-8 py-2 text-xs bg-white dark:bg-slate-900/90 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-blue-500 dark:focus:border-cyan-500 transition-colors shadow-sm"
+            />
+            {holdingSearch && (
+              <button
+                type="button"
+                onClick={() => setHoldingSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+
+          {/* Filter & Sort Controls */}
+          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            {/* Filter by Gain/Loss */}
+            <div className="relative flex-1 sm:flex-none min-w-[100px]">
+              <select
+                value={holdingFilterGain}
+                onChange={(e) => setHoldingFilterGain(e.target.value as any)}
+                aria-label="Filter positions by gain or loss"
+                className="w-full sm:w-auto appearance-none pl-3 pr-7 py-2 text-xs font-semibold bg-white dark:bg-slate-900/90 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:border-blue-500 dark:focus:border-cyan-500 cursor-pointer shadow-sm transition-colors"
+              >
+                <option value="all">All Positions</option>
+                <option value="gainers">Gainers Only</option>
+                <option value="losers">Losers Only</option>
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
+            </div>
+
+            {/* Sort Field */}
+            <div className="relative flex-1 sm:flex-none min-w-[120px]">
+              <select
+                value={holdingSortBy}
+                onChange={(e) => setHoldingSortBy(e.target.value as any)}
+                aria-label="Sort positions by field"
+                className="w-full sm:w-auto appearance-none pl-3 pr-7 py-2 text-xs font-semibold bg-white dark:bg-slate-900/90 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:border-blue-500 dark:focus:border-cyan-500 cursor-pointer shadow-sm transition-colors"
+              >
+                <option value="marketValue">Sort: Market Value</option>
+                <option value="totalGain">Sort: Total Gain</option>
+                <option value="gainPercent">Sort: Gain %</option>
+                <option value="dailyGain">Sort: Day Change</option>
+                <option value="ticker">Sort: Symbol</option>
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
+            </div>
+
+            {/* Sort Order Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setHoldingSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+              className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/80 text-slate-700 dark:text-slate-200 transition-colors shadow-sm shrink-0 font-bold text-xs"
+              title={`Sort ${holdingSortOrder === 'asc' ? 'Descending' : 'Ascending'}`}
+              aria-label={`Toggle sort order: currently ${holdingSortOrder === 'asc' ? 'ascending' : 'descending'}`}
+            >
+              <ArrowUpDown className="h-3.5 w-3.5" />
+              <span className="text-[11px] uppercase tracking-wider">{holdingSortOrder}</span>
+            </button>
           </div>
         </div>
 
@@ -1733,23 +1933,23 @@ export default function PortfolioDashboard() {
                       {posCurrency}{displayMarketValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </td>
                     <td className="py-4 px-4 text-right align-middle">
-                      <div className={`flex flex-col items-end justify-center ${asset.totalGain >= 0 ? 'text-emerald-600 dark:text-emerald-450' : 'text-rose-500'}`}>
+                      <div className={`flex flex-col items-end justify-center ${asset.totalGain >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
                         <span className="text-sm font-semibold flex items-center gap-0.5">
                           {asset.totalGain >= 0 ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
                           {posCurrency}{Math.abs(displayTotalGain).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </span>
-                        <span className="text-[10px] font-medium opacity-85">
-                          {asset.gainPercent.toFixed(2)}%
+                        <span className="text-xs font-black opacity-100">
+                          {asset.gainPercent >= 0 ? '+' : ''}{asset.gainPercent.toFixed(2)}%
                         </span>
                       </div>
                     </td>
                     <td className="py-4 px-4 text-right align-middle font-mono hidden sm:table-cell">
-                      <div className={`flex flex-col items-end justify-center ${displayDailyGain >= 0 ? 'text-emerald-600 dark:text-emerald-450' : 'text-rose-500'}`}>
+                      <div className={`flex flex-col items-end justify-center ${displayDailyGain >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
                         <span className="text-sm font-semibold flex items-center gap-0.5">
                           {displayDailyGain >= 0 ? '+' : ''}
                           {posCurrency}{displayDailyGain.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </span>
-                        <span className="text-[10px] font-medium opacity-85">
+                        <span className="text-xs font-black opacity-100">
                           {displayDailyGain >= 0 ? '+' : ''}{dailyGainPercent.toFixed(2)}%
                         </span>
                       </div>
@@ -1832,7 +2032,7 @@ export default function PortfolioDashboard() {
                       <span className="text-[11px] font-bold text-slate-955 dark:text-white">
                         {posCurrency}{displayMarketValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </span>
-                      <span className={`text-[9px] font-semibold flex items-center gap-0.5 ${asset.totalGain >= 0 ? 'text-emerald-600 dark:text-emerald-450' : 'text-rose-500'}`}>
+                      <span className={`text-[9px] font-semibold flex items-center gap-0.5 ${asset.totalGain >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
                         {asset.totalGain >= 0 ? '+' : ''}{posCurrency}{displayTotalGain.toLocaleString(undefined, { maximumFractionDigits: 0 })} ({asset.totalGain >= 0 ? '+' : ''}{asset.gainPercent.toFixed(1)}%)
                       </span>
                     </div>
@@ -1858,8 +2058,21 @@ export default function PortfolioDashboard() {
               );
             })}
             {filteredHoldings.length === 0 && (
-              <div className="py-8 text-center text-xs text-slate-400">
-                No active holdings found in this category.
+              <div className="py-12 flex flex-col items-center justify-center text-center px-4">
+                <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">
+                  No active holdings found in this category.
+                </p>
+                <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 max-w-sm">
+                  Add your first stock, ETF, crypto, or metal asset to start tracking real-time performance.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => isSandboxMode ? setIsSandboxOpen(true) : setIsModalOpen(true)}
+                  className={isSandboxMode ? "portfolio-action-btn-sandbox mt-4 inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold" : "portfolio-action-btn mt-4 inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold"}
+                >
+                  <Plus className="h-3.5 w-3.5 stroke-[3]" />
+                  <span>{isSandboxMode ? "Place First Paper Trade" : "Add Asset Position"}</span>
+                </button>
               </div>
             )}
           </div>
@@ -1940,8 +2153,8 @@ export default function PortfolioDashboard() {
                       key={opt.value}
                       type="button"
                       onClick={() => setMarketId(opt.value)}
-                      className={`py-2.5 px-3 text-xs font-extrabold rounded-xl border transition-all ${marketId === opt.value
-                        ? "bg-blue-600 dark:bg-cyan-500 border-blue-600 dark:border-cyan-500 text-white dark:text-night-900 shadow-md shadow-blue-500/10"
+                      className={`portfolio-category-btn py-2.5 px-3 text-xs font-extrabold rounded-xl border transition-all ${marketId === opt.value
+                        ? "portfolio-category-btn-active bg-blue-600 dark:bg-cyan-400 border-blue-600 dark:border-cyan-400 text-white dark:text-night-950 shadow-md shadow-blue-500/10"
                         : "bg-slate-50 dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white"
                         }`}
                     >
@@ -1964,7 +2177,7 @@ export default function PortfolioDashboard() {
                     }}
                     onFocus={() => setShowSuggestions(true)}
                     className="w-full bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 px-3.5 py-2.5 text-sm rounded-xl outline-none text-slate-900 dark:text-white pr-10 focus:border-blue-500 dark:focus:border-cyan-400 transition-colors"
-                    placeholder="Search by symbol or name"
+                    placeholder="Search by symbol or name (e.g. RELIANCE, AAPL)"
                     required
                   />
                   {isSearching && <Loader2 className="absolute right-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 animate-spin" />}
@@ -1972,9 +2185,9 @@ export default function PortfolioDashboard() {
 
                 {showSuggestions && assetSuggestions.length > 0 && (
                   <div className="absolute z-50 w-full mt-1.5 bg-white dark:bg-night-900 border border-slate-200 dark:border-white/10 rounded-xl shadow-xl max-h-48 overflow-y-auto custom-scrollbar">
-                    {assetSuggestions.map((asset) => (
+                    {assetSuggestions.map((asset, idx) => (
                       <div
-                        key={asset.id}
+                        key={asset.symbol || idx}
                         className="px-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5 flex justify-between items-center border-b border-slate-50 dark:border-white/5 last:border-0"
                         onClick={() => handleSelectAsset(asset)}
                       >
@@ -1989,8 +2202,8 @@ export default function PortfolioDashboard() {
                 )}
 
                 {selectedAsset && (
-                  <p className="mt-2 text-xs font-bold text-emerald-600 dark:text-emerald-450 flex items-center gap-1.5">
-                    ✓ Selected: {selectedAsset.name}
+                  <p className="mt-2 text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                    ✓ Selected: {selectedAsset.name} ({selectedAsset.ticker})
                   </p>
                 )}
               </div>
@@ -2025,10 +2238,16 @@ export default function PortfolioDashboard() {
               <button
                 type="submit"
                 disabled={isAddingAsset}
-                className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 dark:bg-cyan-500 dark:hover:bg-cyan-400 py-3 text-sm font-bold text-white dark:text-night-900 mt-2 shadow-md transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
+                className="portfolio-add-asset-submit w-full rounded-xl py-3 px-4 text-xs font-black uppercase tracking-wider mt-4 transition-all active:scale-[0.98] flex items-center justify-center gap-2 cursor-pointer shadow-lg"
               >
-                {isAddingAsset && <Loader2 className="h-4 w-4 animate-spin" />}
-                {isAddingAsset ? "Adding Position..." : "Log Position"}
+                {isAddingAsset ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin text-current" />
+                    <span>Adding Position...</span>
+                  </>
+                ) : (
+                  <span>Log Position</span>
+                )}
               </button>
             </form>
           </div>
@@ -2060,33 +2279,42 @@ export default function PortfolioDashboard() {
       {isCloseModalOpen && closeTradeAsset && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/40 dark:bg-night-950/80 backdrop-blur-sm animate-in fade-in duration-300" onClick={() => setIsCloseModalOpen(false)} />
-          <div className="relative z-10 w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 dark:border-white/10 bg-white dark:bg-night-900 shadow-2xl animate-in fade-in zoom-in-95 duration-200 p-6">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white font-display">Close Position - {closeTradeAsset.name}</h3>
-              <button disabled={isClosingPosition} onClick={() => setIsCloseModalOpen(false)} className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors disabled:opacity-50">
+          <div className="close-position-modal relative z-10 w-full max-w-md overflow-hidden rounded-lg border border-slate-200 dark:border-[#2a2a2a] bg-white dark:bg-[#111111] shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-start justify-between border-b border-slate-200 dark:border-[#242424] px-5 py-4">
+              <div className="min-w-0">
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="rounded border border-blue-500/20 bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-blue-600 dark:border-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-400">
+                    {closeTradeAsset.ticker}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-[#737373]">Position exit</span>
+                </div>
+                <h3 className="truncate text-base font-bold text-slate-900 dark:text-[#f5f5f5] font-display">Close Position</h3>
+                <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-[#a3a3a3]">{closeTradeAsset.name}</p>
+              </div>
+              <button disabled={isClosingPosition} onClick={() => setIsCloseModalOpen(false)} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-[#1c1c1c] dark:hover:text-white transition-colors disabled:opacity-50">
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <form onSubmit={handleClosePositionSubmit} className="space-y-4">
-              <div className="p-3 bg-slate-50 dark:bg-white/[0.02] border border-slate-200/50 dark:border-white/5 rounded-2xl space-y-1.5 text-xs font-bold text-slate-600 dark:text-slate-400">
+            <form onSubmit={handleClosePositionSubmit} className="space-y-4 p-5">
+              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs dark:border-[#242424] dark:bg-[#0d0d0d]">
                 <div className="flex justify-between">
-                  <span>Current Shares:</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200">
+                  <span className="font-medium text-slate-500 dark:text-[#a3a3a3]">Current shares</span>
+                  <span className="font-mono font-bold text-slate-800 dark:text-[#f5f5f5]">
                     {closeTradeAsset.shares < 0
                       ? `${Math.abs(closeTradeAsset.shares).toLocaleString()} (Short)`
                       : closeTradeAsset.shares.toLocaleString()}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Avg Purchase Cost:</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200">
+                  <span className="font-medium text-slate-500 dark:text-[#a3a3a3]">Average cost</span>
+                  <span className="font-mono font-bold text-slate-800 dark:text-[#f5f5f5]">
                     {closeTradeAsset.sectionId === 'domestic' ? '₹' : '$'}{closeTradeAsset.avgCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Current Market Price:</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200">
+                  <span className="font-medium text-slate-500 dark:text-[#a3a3a3]">Market price</span>
+                  <span className="font-mono font-bold text-slate-800 dark:text-[#f5f5f5]">
                     {closeTradeAsset.sectionId === 'domestic' ? '₹' : '$'}{closeTradeAsset.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
                 </div>
@@ -2094,7 +2322,7 @@ export default function PortfolioDashboard() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1.5">Shares to Close</label>
+                  <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-[#a3a3a3]">Shares to close</label>
                   <input
                     type="number"
                     step="any"
@@ -2103,11 +2331,11 @@ export default function PortfolioDashboard() {
                     value={closeTradeShares}
                     onChange={e => setCloseTradeShares(e.target.value)}
                     max={Math.abs(closeTradeAsset.shares)}
-                    className="w-full bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 px-3.5 py-2.5 text-sm rounded-xl outline-none text-slate-900 dark:text-white focus:border-blue-500 dark:focus:border-cyan-400 transition-colors disabled:opacity-50"
+                    className="w-full rounded-md border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-blue-500 dark:border-[#242424] dark:bg-[#171717] dark:text-white dark:focus:border-cyan-400 disabled:opacity-50"
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-slate-500 block mb-1.5">Closing Price ($)</label>
+                  <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-[#a3a3a3]">Closing price ({closeTradeAsset.sectionId === 'domestic' ? '₹' : '$'})</label>
                   <input
                     type="number"
                     step="any"
@@ -2115,7 +2343,7 @@ export default function PortfolioDashboard() {
                     disabled={isClosingPosition}
                     value={closeTradePrice}
                     onChange={e => setCloseTradePrice(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 px-3.5 py-2.5 text-sm rounded-xl outline-none text-slate-900 dark:text-white focus:border-blue-500 dark:focus:border-cyan-400 transition-colors disabled:opacity-50"
+                    className="w-full rounded-md border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-blue-500 dark:border-[#242424] dark:bg-[#171717] dark:text-white dark:focus:border-cyan-400 disabled:opacity-50"
                   />
                 </div>
               </div>
@@ -2131,28 +2359,29 @@ export default function PortfolioDashboard() {
                   : (priceNum - closeTradeAsset.avgCost) * sharesNum;
                 const isGain = pl >= 0;
                 return (
-                  <div className={`p-4 rounded-2xl border text-center space-y-1 ${isGain ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-450' : 'bg-red-500/10 border-red-500/20 text-red-500'}`}>
-                    <span className="text-[10px] font-black uppercase tracking-wider block">Estimated Booked Profit/Loss</span>
-                    <span className="text-lg font-black font-mono">
+                  <div className={`rounded-md border p-4 text-center ${isGain ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-400' : 'bg-rose-500/10 border-rose-500/25 text-rose-600 dark:text-rose-400'}`}>
+                    <span className="mb-1 block text-[10px] font-black uppercase tracking-[0.16em]">Estimated realized P&L</span>
+                    <span className="block text-xl font-black font-mono">
                       {isGain ? '+' : ''}{closeTradeAsset.sectionId === 'domestic' ? '₹' : '$'}{pl.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
+                    <span className="mt-1 block text-[10px] font-bold opacity-80">Based on the entered closing price</span>
                   </div>
                 );
               })()}
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex gap-3 border-t border-slate-200 pt-4 dark:border-[#242424]">
                 <button
                   type="button"
                   disabled={isClosingPosition}
                   onClick={() => setIsCloseModalOpen(false)}
-                  className="flex-1 py-3 rounded-xl border border-slate-250 dark:border-white/10 text-slate-700 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-white/5 text-xs font-bold transition-all disabled:opacity-50"
+                  className="flex-1 rounded-md border border-slate-200 py-3 text-xs font-bold text-slate-700 transition-all hover:bg-slate-50 dark:border-[#2a2a2a] dark:text-[#a3a3a3] dark:hover:bg-[#171717] disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isClosingPosition}
-                  className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 dark:bg-cyan-500 dark:hover:bg-cyan-400 text-white dark:text-night-900 text-xs font-black uppercase shadow-md transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  className="close-position-submit flex-1 rounded-md bg-blue-600 py-3 text-xs font-black uppercase text-white shadow-md transition-all hover:bg-blue-500 active:scale-95 dark:bg-cyan-500 dark:text-[#07110a] dark:hover:bg-cyan-400 disabled:opacity-50 flex items-center justify-center gap-1.5"
                 >
                   {isClosingPosition && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   Execute Close
@@ -2190,7 +2419,7 @@ export default function PortfolioDashboard() {
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className={`text-sm font-black font-mono ${(asset.bookedPL || 0) >= 0 ? 'text-emerald-600 dark:text-emerald-450' : 'text-rose-500'}`}>
+                    <span className={`text-sm font-black font-mono ${(asset.bookedPL || 0) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
                       {(asset.bookedPL || 0) >= 0 ? '+' : ''}{asset.posCurrency}{(asset.bookedPL || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </span>
                     <button

@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import CandlestickChart from "./CandlestickChart";
 import { ChartHeader } from "./ChartHeader";
-import { getUnifiedAssetDetails, getTechnicals } from "../../services/marketService";
+import { getUnifiedAssetDetails, getTechnicals, getStockSentiment } from "../../services/marketService";
 import { syncVirtualState } from "../../services/portfolioService";
 import toast from "react-hot-toast";
 
@@ -55,6 +55,28 @@ const parseDateParts = (dateVal: any) => {
   return { day, month, year };
 };
 
+const ExpandableDescription = ({
+  description,
+  className = "text-xs text-slate-400 leading-relaxed text-justify",
+  emptyText = "No description available."
+}: {
+  description?: string;
+  maxLines?: number;
+  maxSentences?: number;
+  className?: string;
+  emptyText?: string;
+}) => {
+  if (!description) {
+    return <p className={className}>{emptyText}</p>;
+  }
+
+  return (
+    <p className={`${className} line-clamp-5`}>
+      {description}
+    </p>
+  );
+};
+
 export default function AssetChartModal({ open, onClose, asset }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const tabContentRef = useRef<HTMLDivElement>(null);
@@ -82,6 +104,7 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
   const [data, setData] = useState<any>(null);
   const [technicals, setTechnicals] = useState<any>(null);
   const [meta, setMeta] = useState<any>(null);
+  const [marketSentiment, setMarketSentiment] = useState<any>(null);
   const [hasComparison, setHasComparison] = useState(false);
   const [timeframe, setTimeframe] = useState("1Y");
 
@@ -258,7 +281,7 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
     const allTabs = [
       { id: "overview", label: "Overview", icon: Layers },
       { id: "analysts", label: "Analyst Targets", icon: Compass },
-      { id: "sentiment", label: "Stock Sentiment", icon: Brain },
+      { id: "sentiment", label: "Sentiment", icon: Brain },
       { id: "ownership", label: "Ownership", icon: Users },
       { id: "events", label: "Calendar Events", icon: Calendar },
       { id: "technicals", label: "Structural Levels", icon: Activity },
@@ -323,6 +346,24 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
       }
     };
     loadTech();
+  }, [open, symbol, activeTab]);
+
+  useEffect(() => {
+    if (!open || !symbol || activeTab !== "sentiment") return;
+
+    let ignore = false;
+    const loadSentiment = async () => {
+      try {
+        const result = await getStockSentiment(symbol);
+        if (!ignore) setMarketSentiment(result);
+      } catch (err) {
+        console.error("Failed to load AI sentiment:", err);
+        if (!ignore) setMarketSentiment(null);
+      }
+    };
+
+    loadSentiment();
+    return () => { ignore = true; };
   }, [open, symbol, activeTab]);
 
   useEffect(() => {
@@ -498,14 +539,25 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
 
   // Derive dynamic sentiment
   const sentiment = useMemo(() => {
-    if (!data) return { score: 50, label: "Neutral", reasons: ["No coverage available"] };
-    if (data.sentiment) {
+    const apiSentiment = marketSentiment || data?.sentiment;
+
+    if (apiSentiment) {
+      const score = Number(apiSentiment.score ?? apiSentiment.sentimentScore ?? apiSentiment.sentiment_score ?? 50);
+      const label = String(apiSentiment.label ?? apiSentiment.sentiment ?? apiSentiment.summary ?? "Neutral");
+      const reasons = Array.isArray(apiSentiment.reasons)
+        ? apiSentiment.reasons
+        : Array.isArray(apiSentiment.takeaways)
+          ? apiSentiment.takeaways
+          : [apiSentiment.summary || apiSentiment.description || "No coverage available"];
+
       return {
-        score: Number(data.sentiment.score ?? 50),
-        label: String(data.sentiment.label ?? "Neutral"),
-        reasons: Array.isArray(data.sentiment.reasons) ? data.sentiment.reasons : ["No coverage available"]
+        score: Math.min(Math.max(score, 0), 100),
+        label: label.charAt(0).toUpperCase() + label.slice(1),
+        reasons: reasons.filter(Boolean)
       };
     }
+
+    if (!data) return { score: 50, label: "Neutral", reasons: ["No coverage available"] };
     let score = 50;
     const reasons: string[] = [];
 
@@ -552,7 +604,7 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
 
     const label = score >= 65 ? "Bullish" : score <= 35 ? "Bearish" : "Neutral";
     return { score: Math.min(Math.max(score, 0), 100), label, reasons };
-  }, [data]);
+  }, [data, marketSentiment]);
 
   if (!open || !asset) return null;
 
@@ -619,11 +671,15 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                     symbol={symbol}
                     timeframe={timeframe}
                     onCompareChange={(compareSym) => setHasComparison(!!compareSym)}
-                    onMetaLoaded={(incoming) => setMeta((prev: any) => ({
-                      ...prev,
-                      ...incoming,
-                      performance: incoming.performance || prev?.performance
-                    }))}
+                    onMetaLoaded={(incoming) => {
+                      queueMicrotask(() => {
+                        setMeta((prev: any) => ({
+                          ...prev,
+                          ...incoming,
+                          performance: incoming.performance || prev?.performance
+                        }));
+                      });
+                    }}
                   />
                 </div>
               </div>
@@ -666,22 +722,22 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
               const currentPrice = meta?.price || data?.statistics?.price || activePosition.avgCost || 0;
               const isShort = activePosition.shares < 0;
               const qty = Math.abs(activePosition.shares);
-              
+
               // Determine dynamic currency symbol based on asset properties
               const currencyCode = meta?.currency || data?.quote?.currency || (symbol.toUpperCase().endsWith('.NS') || symbol.toUpperCase().endsWith('.BO') ? 'INR' : 'USD');
               const curSym = currencyCode.toUpperCase() === 'INR' ? '₹' : '$';
-              
+
               // Calculate Unrealized P&L
-              const pnl = isShort 
+              const pnl = isShort
                 ? (activePosition.avgCost - currentPrice) * qty
                 : (currentPrice - activePosition.avgCost) * qty;
-                
-              const pnlPercent = activePosition.avgCost > 0 
+
+              const pnlPercent = activePosition.avgCost > 0
                 ? (isShort
-                    ? ((activePosition.avgCost - currentPrice) / activePosition.avgCost) * 100
-                    : ((currentPrice - activePosition.avgCost) / activePosition.avgCost) * 100)
+                  ? ((activePosition.avgCost - currentPrice) / activePosition.avgCost) * 100
+                  : ((currentPrice - activePosition.avgCost) / activePosition.avgCost) * 100)
                 : 0;
-                
+
               const isProfit = pnl >= 0;
               const pnlColorClass = isProfit ? "text-emerald-400" : "text-rose-400";
               const pnlBgClass = isProfit ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20";
@@ -690,7 +746,7 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
               return (
                 <div className="bg-gradient-to-br from-[#0e122b]/95 via-[#0b0e24]/98 to-[#090d1f]/99 border border-slate-800/80 rounded-2xl p-5 shadow-2xl backdrop-blur-md hover:border-slate-700/50 transition-all duration-300">
                   <div className="grid grid-cols-1 md:grid-cols-[1fr_2.5fr_2.5fr_1.3fr] gap-6 items-center">
-                    
+
                     {/* Section 1: Header */}
                     <div className="flex flex-col justify-center md:border-r border-slate-800/60 md:pr-4 h-full">
                       <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Active Position</span>
@@ -832,9 +888,15 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                             )}
                           </div>
                         </div>
-                        <p className="text-xs text-slate-400 leading-relaxed mt-5 pt-5 text-justify">
-                          {data.profile.description}
-                        </p>
+
+                        <div className="mt-5 pt-5 border-t border-slate-900">
+                          <ExpandableDescription
+                            description={data.profile.description}
+                            maxSentences={5}
+                            className="text-xs text-slate-400 leading-relaxed text-justify"
+                            emptyText="No description available."
+                          />
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -857,24 +919,24 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                               <span className="text-slate-300 font-bold">{formatVal(data.statistics.sharesOutstanding)}</span>
                             </div>
                             <div className="flex justify-between py-1 border-b border-slate-900/40">
-                              <span className="text-slate-500">PE Ratio</span>
-                              <span className="text-slate-300 font-bold">{formatVal(data.statistics.pe)}</span>
+                              <span className="text-slate-500">Price to Book</span>
+                              <span className="text-slate-300 font-bold">{formatVal(data.statistics.priceToBook)}</span>
                             </div>
                             <div className="flex justify-between py-1 border-b border-slate-900/40">
                               <span className="text-slate-500">Forward PE</span>
                               <span className="text-slate-300 font-bold">{formatVal(data.statistics.forwardPe)}</span>
                             </div>
                             <div className="flex justify-between py-1 border-b border-slate-900/40">
-                              <span className="text-slate-500">PEG Ratio</span>
-                              <span className="text-slate-300 font-bold">{formatVal(data.statistics.peg)}</span>
+                              <span className="text-slate-500">Enterprise / EBITDA</span>
+                              <span className="text-slate-300 font-bold">{formatVal(data.statistics.enterpriseToEbitda)}</span>
                             </div>
                             <div className="flex justify-between py-1 border-b border-slate-900/40">
                               <span className="text-slate-500">Beta</span>
                               <span className="text-slate-300 font-bold">{formatVal(data.statistics.beta)}</span>
                             </div>
                             <div className="flex justify-between py-1 border-b border-slate-900/40">
-                              <span className="text-slate-500">Div. Yield</span>
-                              <span className="text-slate-300 font-bold">{formatVal(data.statistics.dividendYield * 100, false, true)}</span>
+                              <span className="text-slate-500">Price to Book</span>
+                              <span className="text-slate-300 font-bold">{formatVal(data.statistics.priceToBook)}</span>
                             </div>
                           </div>
                         </div>
@@ -951,10 +1013,10 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                           {/* Consensus Gauge Track */}
                           {typeof data.analysts.recommendationMean === 'number' && data.analysts.recommendationMean > 0 && (
                             <div className="space-y-4 mb-6">
-                              <div className="relative h-2 bg-gradient-to-r from-emerald-500 via-yellow-500 to-rose-500 rounded-full w-full">
+                              <div className="consensus-gauge-track relative h-2.5 bg-gradient-to-r from-emerald-500 via-yellow-400 to-rose-500 rounded-full w-full shadow-inner border border-black/10 dark:border-white/10">
                                 {/* Glowing Pointer */}
                                 <div
-                                  className="absolute -top-1.5 -ml-2.5 w-5 h-5 bg-white border-2 border-slate-950 rounded-full shadow-lg shadow-white/30 flex items-center justify-center transition-all duration-500"
+                                  className="absolute -top-1.5 -ml-2.5 w-5 h-5 bg-white border-2 border-slate-950 rounded-full shadow-lg shadow-white/30 flex items-center justify-center transition-all duration-500 z-10"
                                   style={{ left: `${Math.max(0, Math.min(100, ((data.analysts.recommendationMean - 1) / 4) * 100))}%` }}
                                 >
                                   <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
@@ -1048,39 +1110,39 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                                 />
 
                                 {Math.abs(high - low) < 0.01 * (median || 1) ? (
-                                   <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${medianPct}%` }}>
-                                     <span className="text-[9px] font-black text-purple-400 uppercase tracking-wider">Consensus Target</span>
-                                     <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(median || low, true)}</span>
-                                     <div className="w-0.5 h-3.5 bg-purple-500/40 my-0.5" />
-                                     <div className="w-3.5 h-3.5 bg-purple-500 border-2 border-slate-900 rounded-full shadow-md shadow-purple-500/30" />
-                                   </div>
-                                 ) : (
-                                   <>
-                                     {/* Low Marker Anchor & Label */}
-                                     <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${lowPct}%` }}>
-                                       <span className="text-[9px] font-black text-blue-400 uppercase tracking-wider">Low</span>
-                                       <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(low, true)}</span>
-                                       <div className="w-0.5 h-3.5 bg-blue-500/40 my-0.5" />
-                                       <div className="w-3.5 h-3.5 bg-blue-500 border-2 border-slate-900 rounded-full shadow-md shadow-blue-500/30" />
-                                     </div>
+                                  <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${medianPct}%` }}>
+                                    <span className="text-[9px] font-black text-purple-400 uppercase tracking-wider">Consensus Target</span>
+                                    <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(median || low, true)}</span>
+                                    <div className="w-0.5 h-3.5 bg-purple-500/40 my-0.5" />
+                                    <div className="w-3.5 h-3.5 bg-purple-500 border-2 border-slate-900 rounded-full shadow-md shadow-purple-500/30" />
+                                  </div>
+                                ) : (
+                                  <>
+                                    {/* Low Marker Anchor & Label */}
+                                    <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${lowPct}%` }}>
+                                      <span className="text-[9px] font-black text-blue-400 uppercase tracking-wider">Low</span>
+                                      <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(low, true)}</span>
+                                      <div className="w-0.5 h-3.5 bg-blue-500/40 my-0.5" />
+                                      <div className="w-3.5 h-3.5 bg-blue-500 border-2 border-slate-900 rounded-full shadow-md shadow-blue-500/30" />
+                                    </div>
 
-                                     {/* Median Marker Anchor & Label */}
-                                     <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${medianPct}%` }}>
-                                       <span className="text-[9px] font-black text-purple-400 uppercase tracking-wider">Median</span>
-                                       <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(median, true)}</span>
-                                       <div className="w-0.5 h-3.5 bg-purple-500/40 my-0.5" />
-                                       <div className="w-3.5 h-3.5 bg-purple-500 border-2 border-slate-900 rounded-full shadow-md shadow-purple-500/30" />
-                                     </div>
+                                    {/* Median Marker Anchor & Label */}
+                                    <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${medianPct}%` }}>
+                                      <span className="text-[9px] font-black text-purple-400 uppercase tracking-wider">Median</span>
+                                      <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(median, true)}</span>
+                                      <div className="w-0.5 h-3.5 bg-purple-500/40 my-0.5" />
+                                      <div className="w-3.5 h-3.5 bg-purple-500 border-2 border-slate-900 rounded-full shadow-md shadow-purple-500/30" />
+                                    </div>
 
-                                     {/* High Marker Anchor & Label */}
-                                     <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${highPct}%` }}>
-                                       <span className="text-[9px] font-black text-emerald-400 uppercase tracking-wider">High</span>
-                                       <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(high, true)}</span>
-                                       <div className="w-0.5 h-3.5 bg-emerald-500/40 my-0.5" />
-                                       <div className="w-3.5 h-3.5 bg-emerald-500 border-2 border-slate-900 rounded-full shadow-md shadow-emerald-500/30" />
-                                     </div>
-                                   </>
-                                 )}
+                                    {/* High Marker Anchor & Label */}
+                                    <div className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${highPct}%` }}>
+                                      <span className="text-[9px] font-black text-emerald-400 uppercase tracking-wider">High</span>
+                                      <span className="text-[10px] font-black text-slate-300 font-mono mt-0.5">{formatVal(high, true)}</span>
+                                      <div className="w-0.5 h-3.5 bg-emerald-500/40 my-0.5" />
+                                      <div className="w-3.5 h-3.5 bg-emerald-500 border-2 border-slate-900 rounded-full shadow-md shadow-emerald-500/30" />
+                                    </div>
+                                  </>
+                                )}
 
                                 {/* Current Price Pointer */}
                                 <div className="absolute top-12 flex flex-col items-center -translate-x-1/2 z-10" style={{ left: `${currentPct}%` }}>
@@ -1105,33 +1167,26 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                       exit={{ opacity: 0, y: 10 }}
                       className="space-y-6"
                     >
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="bg-[#090d1a] border border-slate-900 rounded-2xl p-6 shadow-md flex flex-col items-center justify-center">
-                          <span className="text-xs font-black uppercase text-slate-500">Sentiment Score</span>
-                          <span className="text-5xl font-black text-white mt-4 font-mono">{sentiment.score}%</span>
-                          <span className={`text-sm font-black uppercase mt-3 tracking-wide ${sentiment.label === "Bullish" ? "text-emerald-400" : sentiment.label === "Bearish" ? "text-rose-400" : "text-amber-500"
-                            }`}>
+                      <div className="bg-[#090d1a] border border-slate-900 rounded-2xl p-6 shadow-md">
+                        <h4 className="text-[10px] text-slate-500 uppercase font-black tracking-wider pl-1 mb-4">Market Sentiment</h4>
+                        <div className="flex flex-wrap items-center gap-3 mb-4">
+                          <span className="text-3xl font-black text-white font-mono">{sentiment.score}%</span>
+                          <span className={`text-sm font-black uppercase tracking-wide ${sentiment.label === "Bullish" ? "text-emerald-400" : sentiment.label === "Bearish" ? "text-rose-400" : "text-amber-500"}`}>
                             {sentiment.label}
                           </span>
                         </div>
-
-                        <div className="bg-[#090d1a] border border-slate-900 rounded-2xl p-6 shadow-md col-span-2 space-y-4">
-                          <h4 className="text-xs font-black uppercase text-slate-300 border-b border-slate-900 pb-2">
-                            Sentiment Analysis Parameters
-                          </h4>
-                          <ul className="space-y-3 text-xs text-slate-350">
-                            {sentiment.reasons && sentiment.reasons.length > 0 ? (
-                              sentiment.reasons.map((reason: string, i: number) => (
-                                <li key={i} className="flex items-start gap-2.5 leading-relaxed">
-                                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
-                                  <span>{reason}</span>
-                                </li>
-                              ))
-                            ) : (
-                              <li className="text-slate-500 italic py-2">No key sentiment drivers detected for this asset currently.</li>
-                            )}
-                          </ul>
-                        </div>
+                        <ul className="space-y-3 text-xs text-slate-350">
+                          {sentiment.reasons && sentiment.reasons.length > 0 ? (
+                            sentiment.reasons.map((reason: string, i: number) => (
+                              <li key={i} className="flex items-start gap-2.5 leading-relaxed">
+                                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                                <span>{reason}</span>
+                              </li>
+                            ))
+                          ) : (
+                            <li className="text-slate-500 italic py-2">No key sentiment drivers detected for this asset currently.</li>
+                          )}
+                        </ul>
                       </div>
                     </motion.div>
                   )}
@@ -1484,98 +1539,31 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                                   </span>
                                 </div>
 
-                                {(() => {
-                                  const minLevel = S2;
-                                  const maxLevel = R2;
-                                  const range = maxLevel - minLevel || 1;
-                                  const getPct = (val: number) => {
-                                    return Math.max(0, Math.min(100, ((val - minLevel) / range) * 100));
-                                  };
-                                  const pricePct = getPct(price);
-
-                                  return (
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-center pt-2">
-                                      {/* Price Ladder Visual Gauge */}
-                                      <div className="col-span-1 flex flex-col items-center justify-center p-3 bg-[#0c1022]/40 rounded-xl border border-slate-900/60 h-full min-h-[250px] relative">
-                                        <span className="text-[9px] text-slate-500 uppercase font-black tracking-wider mb-2">Price Alignment</span>
-                                        {/* Prominent Current Price Pulsing Badge */}
-                                        <div className="mb-4 bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 px-2.5 py-1 rounded-lg text-xs font-black font-mono shadow-sm flex items-center gap-1.5 z-10">
-                                          <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                                          <span>Current: {formatVal(price, true)}</span>
-                                        </div>
-                                        <div className="relative w-full px-6 h-36 flex items-center justify-center">
-                                          {/* Vertical track */}
-                                          <div className="absolute top-0 bottom-0 w-[3px] rounded-full bg-gradient-to-t from-emerald-500/30 via-blue-500/20 to-rose-500/30 border border-slate-900/40" />
-
-                                          {/* Ticks/Labels - Centered Layout */}
-                                          {[
-                                            { label: "R2", value: R2, color: "text-rose-400" },
-                                            { label: "R1", value: R1, color: "text-rose-455" },
-                                            { label: "PP", value: PP, color: "text-blue-400" },
-                                            { label: "S1", value: S1, color: "text-emerald-455" },
-                                            { label: "S2", value: S2, color: "text-emerald-400" },
-                                          ].map((lvl, idx) => {
-                                            const pct = getPct(lvl.value);
-                                            return (
-                                              <div
-                                                key={idx}
-                                                className="absolute left-0 right-0 h-0 flex items-center justify-center pointer-events-none"
-                                                style={{ bottom: `${pct}%` }}
-                                              >
-                                                {/* Left label */}
-                                                <span className={`absolute right-[56%] font-mono text-[9px] font-bold w-12 text-right ${lvl.color}`}>{lvl.label}</span>
-
-                                                {/* Center crossing tick line */}
-                                                <div className="w-3.5 h-[1px] bg-slate-700 z-10" />
-
-                                                {/* Right price value */}
-                                                <span className="absolute left-[56%] font-mono text-[9px] text-slate-500 w-16 text-left">{formatVal(lvl.value, true)}</span>
-                                              </div>
-                                            );
-                                          })}
-
-                                          {/* Current Price Pointer */}
-                                          <div
-                                            className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center transition-all duration-500 ease-out z-10 w-12"
-                                            style={{ bottom: `${pricePct}%` }}
-                                          >
-                                            <div className="w-full h-[2px] bg-cyan-400 shadow-[0_0_8px_#22d3ee] relative flex items-center justify-center">
-                                              <div className="absolute w-2 h-2 rounded-full bg-cyan-400 border border-slate-950 animate-ping" />
-                                              <div className="absolute w-2 h-2 rounded-full bg-cyan-400 border border-slate-950" />
-                                            </div>
+                                  <div className="space-y-2.5 pt-2">
+                                    {[
+                                      { label: "R2 (Resistance 2)", value: R2, textClass: "text-rose-400", borderClass: "border-l-4 border-l-rose-500/70", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
+                                      { label: "R1 (Resistance 1)", value: R1, textClass: "text-rose-455", borderClass: "border-l-4 border-l-rose-500/40", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
+                                      { label: "PP (Pivot Point)", value: PP, textClass: "text-blue-400", borderClass: "border-l-4 border-l-blue-500", bgClass: "border border-blue-500/20 bg-blue-500/5 shadow-md shadow-blue-500/5" },
+                                      { label: "S1 (Support 1)", value: S1, textClass: "text-emerald-455", borderClass: "border-l-4 border-l-emerald-500/40", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
+                                      { label: "S2 (Support 2)", value: S2, textClass: "text-emerald-400", borderClass: "border-l-4 border-l-emerald-500/70", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
+                                    ].map((lvl, idx) => {
+                                      const isAbove = price >= lvl.value;
+                                      return (
+                                        <div
+                                          key={idx}
+                                          className={`flex justify-between items-center px-4 py-2.5 rounded-xl transition-all duration-250 ${lvl.bgClass} ${lvl.borderClass}`}
+                                        >
+                                          <span className={`font-sans font-bold text-xs ${lvl.textClass}`}>{lvl.label}</span>
+                                          <div className="flex items-center gap-3 font-mono text-xs font-bold text-slate-200 whitespace-nowrap">
+                                            <span>{formatVal(lvl.value, true)}</span>
+                                            <span className={`text-[9px] font-sans font-bold px-2 py-0.5 rounded-full ${isAbove ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"}`}>
+                                              {isAbove ? "Above" : "Below"}
+                                            </span>
                                           </div>
                                         </div>
-                                      </div>
-
-                                      {/* Detailed Levels List */}
-                                      <div className="col-span-2 space-y-2.5">
-                                        {[
-                                          { label: "R2 (Resistance 2)", value: R2, textClass: "text-rose-400", borderClass: "border-l-4 border-l-rose-500/70", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
-                                          { label: "R1 (Resistance 1)", value: R1, textClass: "text-rose-455", borderClass: "border-l-4 border-l-rose-500/40", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
-                                          { label: "PP (Pivot Point)", value: PP, textClass: "text-blue-400", borderClass: "border-l-4 border-l-blue-500", bgClass: "border border-blue-500/20 bg-blue-500/5 shadow-md shadow-blue-500/5" },
-                                          { label: "S1 (Support 1)", value: S1, textClass: "text-emerald-455", borderClass: "border-l-4 border-l-emerald-500/40", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
-                                          { label: "S2 (Support 2)", value: S2, textClass: "text-emerald-400", borderClass: "border-l-4 border-l-emerald-500/70", bgClass: "border border-slate-900 bg-[#070b16]/80 hover:bg-[#0c1022]" },
-                                        ].map((lvl, idx) => {
-                                          const isAbove = price >= lvl.value;
-                                          return (
-                                            <div
-                                              key={idx}
-                                              className={`flex justify-between items-center px-4 py-2.5 rounded-xl transition-all duration-250 ${lvl.bgClass} ${lvl.borderClass}`}
-                                            >
-                                              <span className={`font-sans font-bold text-xs ${lvl.textClass}`}>{lvl.label}</span>
-                                              <div className="flex items-center gap-3 font-mono text-xs font-bold text-slate-200 whitespace-nowrap">
-                                                <span>{formatVal(lvl.value, true)}</span>
-                                                <span className={`text-[9px] font-sans font-bold px-2 py-0.5 rounded-full ${isAbove ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"}`}>
-                                                  {isAbove ? "Above" : "Below"}
-                                                </span>
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-                                  );
-                                })()}
+                                      );
+                                    })}
+                                  </div>
                               </div>
                             ) : (
                               <div className="bg-[#090d1a] border border-slate-900 rounded-2xl p-6 shadow-md text-center text-xs text-slate-500 py-8 w-full">
@@ -1719,72 +1707,48 @@ export default function AssetChartModal({ open, onClose, asset }: Props) {
                       {(() => {
                         const newsItems = (data.news || []).slice(0, 10);
 
-                        const renderNewsTable = (items: any[]) => (
-                          <div className="overflow-x-auto rounded-2xl border border-slate-900 bg-[#090d1a] shadow-md">
-                            <table className="w-full text-left border-collapse">
-                              <thead>
-                                <tr className="border-b border-slate-900 bg-[#0c1022]">
-                                  <th className="px-4 py-3 text-[10px] uppercase font-black tracking-wider text-slate-500 w-20">Image</th>
-                                  <th className="px-4 py-3 text-[10px] uppercase font-black tracking-wider text-slate-500">Headline</th>
-                                  <th className="px-4 py-3 text-[10px] uppercase font-black tracking-wider text-slate-500 w-16 text-center">Action</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-900/60">
-                                {items.map((item, idx) => (
-                                  <tr key={idx} className="hover:bg-slate-950/40 transition-colors">
-                                    <td className="px-4 py-3 align-middle w-20">
-                                      {item.thumbnail?.resolutions?.[0]?.url ? (
-                                        <img
-                                          src={item.thumbnail.resolutions[0].url}
-                                          alt="News thumbnail"
-                                          className="w-16 h-11 rounded-lg object-cover border border-slate-900 shadow-sm shrink-0 bg-slate-950"
-                                        />
-                                      ) : (
-                                        <div className="w-16 h-11 rounded-lg border border-slate-900/60 shadow-sm shrink-0 bg-gradient-to-br from-[#0c1022] to-[#090d1a] flex items-center justify-center text-slate-500 hover:text-cyan-400 transition-colors">
-                                          <Newspaper className="h-5 w-5 opacity-60" />
-                                        </div>
-                                      )}
-                                    </td>
-                                    <td className="px-4 py-3.5 align-middle space-y-1">
-                                      <span className="text-[9px] font-black text-blue-400 uppercase tracking-wider block">
-                                        {item.publisher || "General News"}
-                                      </span>
-                                      <h4 className="text-xs font-bold text-slate-200 line-clamp-1 leading-snug">
-                                        {item.title}
-                                      </h4>
-                                      <p className="text-[10px] text-slate-400 line-clamp-1 font-normal leading-relaxed">
-                                        {item.summary || item.title}
-                                      </p>
-                                    </td>
-                                    <td className="px-4 py-3.5 align-middle text-center">
-                                      <a
-                                        href={item.link}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="inline-flex items-center justify-center p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:bg-blue-500/20 hover:text-blue-300 transition-all"
-                                        title="Read Article"
-                                      >
-                                        <ExternalLink size={12} className="stroke-[2.5]" />
-                                      </a>
-                                    </td>
-                                  </tr>
-                                ))}
-                                {items.length === 0 && (
-                                  <tr>
-                                    <td colSpan={3} className="px-4 py-8 text-center text-xs text-slate-500">
-                                      No articles found.
-                                    </td>
-                                  </tr>
-                                )}
-                              </tbody>
-                            </table>
+                        const renderNewsList = (items: any[]) => (
+                          <div className="space-y-3 rounded-2xl border border-slate-900 bg-[#090d1a] shadow-md p-3">
+                            {items.map((item, idx) => (
+                              <div key={idx} className="rounded-xl border border-slate-900 bg-[#0c1022] p-3 hover:border-slate-700 transition-colors">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <span className="text-[9px] font-black text-blue-400 uppercase tracking-wider block mb-1.5">
+                                      {item.publisher || "General News"}
+                                    </span>
+                                    <a
+                                      href={item.link}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-xs font-bold text-slate-200 hover:text-blue-400 transition-colors leading-snug block"
+                                    >
+                                      {item.title}
+                                    </a>
+                                  </div>
+                                  <a
+                                    href={item.link}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center justify-center p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:bg-blue-500/20 transition-all shrink-0"
+                                    title="Read Article"
+                                  >
+                                    <ExternalLink size={12} className="stroke-[2.5]" />
+                                  </a>
+                                </div>
+                              </div>
+                            ))}
+                            {items.length === 0 && (
+                              <div className="px-4 py-8 text-center text-xs text-slate-500">
+                                No articles found.
+                              </div>
+                            )}
                           </div>
                         );
 
                         return (
                           <div className="w-full space-y-3">
                             <h4 className="text-[10px] text-slate-500 uppercase font-black tracking-wider pl-1">Latest Coverage</h4>
-                            {renderNewsTable(newsItems)}
+                            {renderNewsList(newsItems)}
                           </div>
                         );
                       })()}

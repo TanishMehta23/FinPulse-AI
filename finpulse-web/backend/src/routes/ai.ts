@@ -1,8 +1,31 @@
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
+import YahooFinance from 'yahoo-finance2';
 import { getAiCache, setAiCache } from '../utils/aiCache.js';
+import { prisma } from '../prisma.js';
+import { protect, type AuthenticatedRequest } from '../utils/auth.js';
 
 const router = Router();
+const yahooFinance = new YahooFinance();
+
+async function fetchAdvisorQuotes(symbols: string[]) {
+  if (symbols.length === 0) return {} as Record<string, number>;
+
+  try {
+    const response = await yahooFinance.quote(symbols);
+    const quotes = Array.isArray(response) ? response : [response];
+    return quotes.reduce<Record<string, number>>((prices, quote: any) => {
+      const price = Number(quote.regularMarketPrice);
+      if (quote.symbol && Number.isFinite(price) && price > 0) {
+        prices[String(quote.symbol).toUpperCase()] = price;
+      }
+      return prices;
+    }, {});
+  } catch (error: any) {
+    console.warn('Advisor quote validation failed:', error.message);
+    return {} as Record<string, number>;
+  }
+}
 
 // Robustly extract the best JSON object/array from an LLM response.
 // Strategy: strip <think> blocks, collect ALL complete JSON structures via
@@ -126,8 +149,84 @@ function safeParseJSON(rawText: string): any {
   }
 }
 
-// Centralized LLM fetcher helper
+// Centralized LLM fetcher helper with sequential queue & rate-limit throttling
+let llmQueueChain: Promise<any> = Promise.resolve();
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function queryLLM(prompt: string, fallbackData: any): Promise<any> {
+  const currentTask = llmQueueChain.then(
+    async () => {
+      await delay(2000); // 2s delay between sequential API calls to prevent 429 rate limits
+      return executeLLMQuery(prompt, fallbackData);
+    },
+    async () => {
+      await delay(2000);
+      return executeLLMQuery(prompt, fallbackData);
+    }
+  );
+  llmQueueChain = currentTask;
+  return currentTask;
+}
+
+async function queryGroqLLM(prompt: string, fallbackData: any): Promise<any> {
+  const currentTask = llmQueueChain.then(
+    async () => {
+      await delay(2000);
+      return executeGroqQuery(prompt, fallbackData);
+    },
+    async () => {
+      await delay(2000);
+      return executeGroqQuery(prompt, fallbackData);
+    }
+  );
+  llmQueueChain = currentTask;
+  return currentTask;
+}
+
+async function executeGroqQuery(prompt: string, fallbackData: any): Promise<any> {
+  const groqKey = process.env.GROQ_API_KEY || process.env.GROQ_API_KEY_SECONDARY;
+  if (!groqKey || !groqKey.trim()) return fallbackData;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await axios.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          model: 'qwen/qwen3.8-27b',
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a professional financial AI assistant. Output ONLY one valid raw JSON object with no markdown, no backticks, and no extra text.'
+            },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.2,
+          max_tokens: 4096,
+          reasoning_effort: 'none',
+          reasoning_format: 'hidden',
+        },
+        {
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+          timeout: 15000,
+        }
+      );
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (content) return safeParseJSON(content);
+    } catch (error: any) {
+      const is429 = error.response?.status === 429 || error.message?.includes('429');
+      if (is429 && attempt === 1) {
+        await delay(2500);
+        continue;
+      }
+      console.warn('Groq advisor query failed; using verified fallback:', error.message);
+      break;
+    }
+  }
+  return fallbackData;
+}
+
+async function executeLLMQuery(prompt: string, fallbackData: any): Promise<any> {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_SECONDARY;
   const geminiKeySecondary = process.env.GEMINI_API_KEY_SECONDARY || process.env.GEMINI_API_KEY;
 
@@ -193,42 +292,53 @@ async function queryLLM(prompt: string, fallbackData: any): Promise<any> {
     }
   }
 
-  // 3. Try Groq
+  // 3. Try Groq (with 429 retry logic)
   const groqKey = process.env.GROQ_API_KEY || process.env.GROQ_API_KEY_SECONDARY;
   if (groqKey && groqKey.trim() !== '') {
-    try {
-      const response = await axios.post(
-        'https://api.groq.com/openai/v1/chat/completions',
-        {
-          model: 'qwen/qwen3.6-27b',
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a professional financial AI assistant. After your reasoning, output ONLY a valid raw JSON object with no markdown, no backticks, no extra text.'
-            },
-            {
-              role: 'user',
-              content: prompt
-            }
-          ],
-          temperature: 0.3,
-          max_tokens: 1200
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${groqKey}`
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await axios.post(
+          'https://api.groq.com/openai/v1/chat/completions',
+          {
+            model: 'qwen/qwen3.8-27b',
+            messages: [
+              {
+                role: 'system',
+                content: 'You are a professional financial AI assistant. After your reasoning, output ONLY a valid raw JSON object with no markdown, no backticks, no extra text.'
+              },
+              {
+                role: 'user',
+                content: prompt
+              }
+            ],
+            temperature: 0.3,
+            max_tokens: 4096,
+            reasoning_effort: 'none',
+            reasoning_format: 'hidden',
           },
-          timeout: 15000
-        }
-      );
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${groqKey}`
+            },
+            timeout: 15000
+          }
+        );
 
-      const content = response.data?.choices?.[0]?.message?.content;
-      if (content) {
-        return safeParseJSON(content);
+        const content = response.data?.choices?.[0]?.message?.content;
+        if (content) {
+          return safeParseJSON(content);
+        }
+      } catch (err: any) {
+        const is429 = err.response?.status === 429 || err.message?.includes('429');
+        if (is429 && attempt === 1) {
+          console.warn(`Groq API returned 429 Rate Limit. Waiting 2.5s before retry (attempt ${attempt}/2)...`);
+          await delay(2500);
+          continue;
+        }
+        console.warn('Groq query failed, using static fallback...', err.message);
+        break;
       }
-    } catch (err: any) {
-      console.warn('Groq query failed, using static fallback...', err.message);
     }
   }
 
@@ -239,7 +349,8 @@ async function queryLLM(prompt: string, fallbackData: any): Promise<any> {
 // GET /api/ai/market-brief
 router.get('/market-brief', async (req: Request, res: Response) => {
   const cacheKey = 'ai:market-brief';
-  const cached = getAiCache(cacheKey);
+  const refresh = req.query.refresh === 'true' || req.query.force === 'true';
+  const cached = refresh ? null : getAiCache(cacheKey);
   if (cached) return res.json(cached);
   const fallback = {
     marketMood: "Neutral",
@@ -295,15 +406,79 @@ Replace ALL values above with REAL, CURRENT, insightful data. Keep reason string
 
   const result = await queryLLM(prompt, fallback);
   result.generatedAt = new Date().toISOString();
+  setAiCache(cacheKey, result);
   res.json(result);
 });
 
+// GET /api/ai/market-drivers
+router.get('/market-drivers', async (req: Request, res: Response) => {
+  const cacheKey = 'ai:market-drivers';
+  const refresh = req.query.refresh === 'true' || req.query.force === 'true';
+  const cached = refresh ? null : getAiCache(cacheKey);
+  if (cached) return res.json(cached);
 
+  const fallback = {
+    question: "Why are markets trading mixed today?",
+    analysis: [
+      "Federal Reserve rate policy expectations remain the dominant driver for institutional equity positioning.",
+      "Earnings reports from top tech market leaders are showing steady margin expansion despite high input costs.",
+      "Energy market fluctuations and geopolitical headlines continue to create localized volatility in commodity-linked sectors."
+    ],
+    macroEvent: {
+      title: "US Inflation & CPI Data Print",
+      impact: "High",
+      description: "Investors are awaiting upcoming inflation data to gauge the likelihood of interest rate adjustments."
+    },
+    bullishFactors: [
+      "Accelerating AI enterprise cloud adoption",
+      "Resilient consumer balance sheets and low unemployment",
+      "Strong corporate cash balances supporting share buybacks"
+    ],
+    bearishFactors: [
+      "Elevated interest rate environment compressing valuation multiples",
+      "Geopolitical friction impacting global shipping routes and supply chains",
+      "Consolidation in commercial real estate lending portfolios"
+    ],
+    watchNext: [
+      "Federal Reserve chair testimony & FOMC minutes release",
+      "Quarterly earnings reports from mega-cap technology stalwarts",
+      "Weekly crude oil inventory and treasury yield curve movements"
+    ],
+    summary: "Markets are currently navigating a balance between strong corporate fundamentals and macroeconomic interest rate headwinds.",
+    generatedAt: new Date().toISOString()
+  };
+
+  const prompt = `You are a professional financial market analyst. Return a single valid JSON object with NO markdown, NO backticks matching this structure:
+{
+  "question": "What is driving market sentiment today?",
+  "analysis": [
+    "Macroeconomic indicators point to sustained economic resilience.",
+    "Institutional inflows favor large-cap technology leaders."
+  ],
+  "macroEvent": {
+    "title": "Fed Policy Update",
+    "impact": "High",
+    "description": "Rate pause expectations guide short-term market momentum."
+  },
+  "bullishFactors": ["Strong tech earnings", "Cooling inflation trends"],
+  "bearishFactors": ["High benchmark interest rates", "Shipping disruptions"],
+  "watchNext": ["Upcoming CPI print", "Treasury yield movements"],
+  "summary": "Markets balance strong corporate earnings against interest rate caution.",
+  "generatedAt": "2024-01-01T00:00:00.000Z"
+}
+Replace ALL values with real, current, insightful financial data. Return ONLY valid JSON.`;
+
+  const result = await queryLLM(prompt, fallback);
+  result.generatedAt = new Date().toISOString();
+  setAiCache(cacheKey, result);
+  res.json(result);
+});
 
 // GET /api/ai/global-market-pulse
 router.get('/global-market-pulse', async (req: Request, res: Response) => {
   const cacheKey = 'ai:global-market-pulse';
-  const cached = getAiCache(cacheKey);
+  const refresh = req.query.refresh === 'true' || req.query.force === 'true';
+  const cached = refresh ? null : getAiCache(cacheKey);
   if (cached) return res.json(cached);
   const fallback = {
     sentiment: "Neutral",
@@ -327,13 +502,15 @@ Replace ALL example values with real, current data. Return only the JSON object.
 
   const result = await queryLLM(prompt, fallback);
   result.generatedAt = new Date().toISOString();
+  setAiCache(cacheKey, result);
   res.json(result);
 });
 
 // GET /api/ai/fear-greed
 router.get('/fear-greed', async (req: Request, res: Response) => {
   const cacheKey = 'ai:fear-greed';
-  const cached = getAiCache(cacheKey);
+  const refresh = req.query.refresh === 'true' || req.query.force === 'true';
+  const cached = refresh ? null : getAiCache(cacheKey);
   if (cached) return res.json(cached);
   const fallback = {
     score: 48,
@@ -368,13 +545,65 @@ Replace ALL example values with real, current data. Return only the JSON object.
 
   const result = await queryLLM(prompt, fallback);
   result.generatedAt = new Date().toISOString();
+  setAiCache(cacheKey, result);
+  res.json(result);
+});
+
+// GET /api/ai/score/:symbol
+router.get('/score/:symbol', async (req: Request, res: Response) => {
+  const symbolParam = req.params.symbol;
+  const symbol = Array.isArray(symbolParam) ? symbolParam[0] : symbolParam;
+  const upperSymbol = symbol.toUpperCase();
+  const cacheKey = `ai:score:${upperSymbol}`;
+  const refresh = req.query.refresh === 'true' || req.query.force === 'true';
+  const cached = refresh ? null : getAiCache(cacheKey);
+  if (cached) return res.json(cached);
+
+  const fallback = {
+    symbol: upperSymbol,
+    recommendation: "HOLD",
+    confidence: 65,
+    aiScore: 65,
+    trend: "Neutral",
+    momentum: "Neutral Momentum",
+    risk: "Medium",
+    volatility: "Medium",
+    support: null,
+    resistance: null,
+    summary: `AI analysis for ${upperSymbol} is currently unavailable. Showing default neutral assessment.`,
+    keyPoints: ["Waiting for sufficient data to generate AI insights."],
+    generatedAt: new Date().toISOString()
+  };
+
+  const prompt = `You are a financial AI analyst. Analyze ${upperSymbol} and return a single valid JSON object (no extra text, no markdown) with exactly these keys:
+{
+  "symbol": "${upperSymbol}",
+  "recommendation": "BUY" | "HOLD" | "SELL" | "STRONG BUY" | "STRONG SELL",
+  "confidence": number (0-100),
+  "aiScore": number (0-100),
+  "trend": "Bullish" | "Bearish" | "Neutral",
+  "momentum": "Strong Momentum" | "Weak Momentum" | "Neutral Momentum",
+  "risk": "Low" | "Medium" | "High",
+  "volatility": "Low" | "Medium" | "High",
+  "support": number | null,
+  "resistance": number | null,
+  "summary": "string (2-3 sentences)",
+  "keyPoints": ["string", "string", "string"],
+  "generatedAt": "ISO timestamp"
+}
+Use current market context. Return ONLY valid JSON.`;
+
+  const result = await queryLLM(prompt, fallback);
+  result.generatedAt = new Date().toISOString();
+  setAiCache(cacheKey, result);
   res.json(result);
 });
 
 // GET /api/ai/pick-of-the-day
 router.get('/pick-of-the-day', async (req: Request, res: Response) => {
   const cacheKey = 'ai:pick-of-the-day';
-  const cached = getAiCache(cacheKey);
+  const refresh = req.query.refresh === 'true' || req.query.force === 'true';
+  const cached = refresh ? null : getAiCache(cacheKey);
   if (cached) return res.json(cached);
   const fallback = {
     symbol: "MSFT",
@@ -420,14 +649,49 @@ router.get('/pick-of-the-day', async (req: Request, res: Response) => {
 
   const result = await queryLLM(prompt, fallback);
   result.generatedAt = new Date().toISOString();
+  setAiCache(cacheKey, result);
   res.json(result);
 });
 
 // GET /api/ai/portfolio-advisor
-router.get('/portfolio-advisor', async (req: Request, res: Response) => {
-  const cacheKey = 'ai:portfolio-advisor';
+router.get('/portfolio-advisor', protect, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.userId;
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const holdings = await prisma.holding.findMany({
+    where: { userId, shares: { not: 0 } },
+    orderBy: { updatedAt: 'desc' },
+    select: {
+      ticker: true,
+      name: true,
+      shares: true,
+      avgCost: true,
+      marketId: true,
+      bookedPL: true,
+      updatedAt: true,
+    },
+  });
+  const account = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { currency: true, baseCurrency: true },
+  });
+  const accountCurrency = account?.currency || account?.baseCurrency || 'USD';
+  const holdingsVersion = holdings[0]?.updatedAt?.getTime() || 0;
+  const cacheKey = `ai:portfolio-advisor:${userId}:${accountCurrency}:${holdings.length}:${holdingsVersion}`;
   const cached = getAiCache(cacheKey);
   if (cached) return res.json(cached);
+
+  const livePrices = await fetchAdvisorQuotes(holdings.map((holding) => holding.ticker.toUpperCase()));
+  const portfolioSnapshot = holdings.map((holding) => ({
+    ticker: holding.ticker,
+    name: holding.name,
+    shares: Math.abs(Number(holding.shares) || 0),
+    averageCost: Number(holding.avgCost) || 0,
+    currentPrice: livePrices[holding.ticker.toUpperCase()] || null,
+    quoteCurrency: holding.marketId === 'domestic' ? 'INR' : 'USD',
+    market: holding.marketId,
+    bookedProfitLoss: Number(holding.bookedPL) || 0,
+  }));
 
   const fallback = {
     healthScore: 78,
@@ -448,14 +712,14 @@ router.get('/portfolio-advisor', async (req: Request, res: Response) => {
       reason: "Overall beta is close to 1.1. Market volatility may impact short-term returns."
     },
     bestOpportunity: {
-      symbol: "NVDA",
-      company: "NVIDIA Corporation",
-      recommendation: "BUY",
-      currentPrice: 120.50,
-      targetPrice: 145.00,
-      expectedUpside: 20.3,
-      confidence: 75,
-      reason: "Strong demand for next-generation AI chips and cloud infrastructure spending."
+      symbol: "N/A",
+      company: "No verified opportunity",
+      recommendation: "HOLD",
+      currentPrice: 0,
+      targetPrice: 0,
+      expectedUpside: 0,
+      confidence: 0,
+      reason: "No opportunity with a verified live quote is available."
     },
     portfolioHealth: {
       outlook: "Bullish",
@@ -524,12 +788,32 @@ router.get('/portfolio-advisor', async (req: Request, res: Response) => {
     "rebalanceSuggestions": [
       { "action": "BUY" | "SELL" | "HOLD", "asset": string, "reason": string }
     ],
-    "generatedAt": string (ISO timestamp)
+    "generatedAt": string (ISO timestamp),
+    "currency": string
   }
-  Reflect professional and realistic asset management suggestions.`;
+  Reflect professional and realistic asset management suggestions. Choose the best opportunity only from the supplied portfolio snapshot tickers. Use the supplied currentPrice for any opportunity price, never invent a current price or currency. Set targetPrice in the same quote currency as currentPrice and return the opportunity currency in the currency field. Do not invent holdings, sector weights, prices, transactions, or performance figures. If the snapshot does not contain enough information for a claim, state that limitation in the reason or recommendation.
 
-  const result = await queryLLM(prompt, fallback);
+  Account display currency: ${accountCurrency}
+
+  Portfolio snapshot for the authenticated user:
+  ${JSON.stringify(portfolioSnapshot)}`;
+
+  const result = await queryGroqLLM(prompt, fallback);
   result.generatedAt = new Date().toISOString();
+  result.personalized = holdings.length > 0;
+  result.aiSource = result === fallback ? 'fallback' : 'llm';
+
+  const opportunity = result.bestOpportunity;
+  const opportunitySymbol = String(opportunity?.symbol || '').trim().toUpperCase();
+  const verifiedCurrentPrice = livePrices[opportunitySymbol];
+  const targetPrice = Number(opportunity?.targetPrice);
+  if (!opportunity || !verifiedCurrentPrice || !Number.isFinite(targetPrice) || targetPrice <= 0) {
+    result.bestOpportunity = fallback.bestOpportunity;
+  } else {
+    result.bestOpportunity.currentPrice = verifiedCurrentPrice;
+    result.bestOpportunity.currency = portfolioSnapshot.find((holding) => holding.ticker.toUpperCase() === opportunitySymbol)?.quoteCurrency || 'USD';
+    result.bestOpportunity.expectedUpside = Number((((targetPrice - verifiedCurrentPrice) / verifiedCurrentPrice) * 100).toFixed(2));
+  }
 
   // Set cache for future requests
   setAiCache(cacheKey, result);

@@ -29,12 +29,15 @@ export default function PortfolioPerformanceChart({
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Map month strings to sequential date strings for lightweight-charts compatibility
+  // Keep the API's month labels aligned with the chart's real calendar dates.
   const mappedChartData = useMemo(() => {
+    if (!initialData || initialData.length === 0) return [];
     return initialData.map((d, index) => {
-      // Increment months instead of days to avoid overlapping year/day labels on timescale
-      const date = new Date(2025, 0, 1);
-      date.setMonth(date.getMonth() + index);
+      const match = d.month.match(/^([A-Z][a-z]{2}) '(\d{2})$/);
+      const monthIndex = match ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[1]) : -1;
+      const date = monthIndex >= 0 && match
+        ? new Date(2000 + Number(match[2]), monthIndex, 1)
+        : new Date(2025, index, 1);
       const timeStr = date.toISOString().split("T")[0];
       return {
         time: timeStr,
@@ -43,6 +46,11 @@ export default function PortfolioPerformanceChart({
       };
     });
   }, [initialData]);
+
+  const seriesKeys = useMemo(() => [
+    { key: "invested", color: "#3b82f6" }, // Blue line for how much is invested
+    { key: "value", color: "#10b981" }      // Green line for how much is made (current value)
+  ], []);
 
   if (hasNoData) {
     return (
@@ -65,12 +73,6 @@ export default function PortfolioPerformanceChart({
   const totalProfit = lastPoint?.profit ?? (currentValue - totalInvested);
   const profitPercentage = totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0;
   const isProfit = totalProfit >= 0;
-
-
-  const seriesKeys = useMemo(() => [
-    { key: "invested", color: "#3b82f6" }, // Blue line for how much is invested
-    { key: "value", color: "#10b981" }      // Green line for how much is made (current value)
-  ], []);
 
   return (
     <div className="glass-panel p-6">

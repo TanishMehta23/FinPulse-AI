@@ -7,6 +7,14 @@ function TradingViewCalendar() {
   const containerRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
 
+  // Determine whether effective theme is dark
+  const isDarkMode = useMemo(() => {
+    if (theme === 'system') {
+      return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return theme === 'dark';
+  }, [theme]);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -17,8 +25,8 @@ function TradingViewCalendar() {
     script.type = "text/javascript";
     script.async = true;
     script.innerHTML = JSON.stringify({
-      colorTheme: theme === "dark" ? "dark" : "light",
-      isTransparent: true,
+      colorTheme: isDarkMode ? "dark" : "light",
+      isTransparent: false,
       width: "100%",
       height: "490",
       locale: "en",
@@ -27,20 +35,20 @@ function TradingViewCalendar() {
     });
 
     containerRef.current.appendChild(script);
-  }, [theme]);
+  }, [isDarkMode]);
 
   return (
-    <div className="glass-panel p-5 rounded-3xl border border-slate-200/50 dark:border-white/5 bg-white/60 dark:bg-white/[0.02] backdrop-blur-sm shadow-[0_8px_30px_rgb(0,0,0,0.04)] h-[580px] overflow-hidden flex flex-col">
-      <div className="flex items-center gap-3 mb-4 pb-4 border-b border-slate-150 dark:border-white/5 bg-gradient-to-r from-blue-50/20 to-transparent dark:from-white/[0.01]">
+    <div className="p-4 rounded-2xl border border-slate-200 dark:border-[#242424] bg-white dark:bg-[#111111] h-[580px] overflow-hidden flex flex-col shadow-xs">
+      <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-200 dark:border-[#242424]">
         <div>
-          <h2 className="text-base font-extrabold text-slate-900 dark:text-white leading-tight">
+          <h2 className="text-sm font-bold text-slate-900 dark:text-[#F5F5F5] uppercase tracking-wide">
             Economic Calendar
           </h2>
-          <p className="text-[10px] text-slate-550 dark:text-slate-400 font-medium">Real-time TradingView Events Feed</p>
+          <p className="text-[11px] text-slate-500 dark:text-[#A3A3A3] font-medium">Real-time TradingView Events Feed</p>
         </div>
       </div>
       
-      <div className="tradingview-widget-container flex-1" ref={containerRef}>
+      <div className="tradingview-widget-container flex-1 rounded-xl overflow-hidden" ref={containerRef}>
         <div className="tradingview-widget-container__widget"></div>
       </div>
     </div>
@@ -54,13 +62,13 @@ export default function News() {
     <div className="space-y-4 md:space-y-6 animate-in fade-in duration-300 px-4 py-6 md:px-6">
 
       {/* Real-time Header Row */}
-      <div className="flex items-center gap-4 pb-4 border-b border-slate-200/50 dark:border-white/5 pt-2">
+      <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-[#242424] pt-2">
         <div>
-          <h1 className="text-2xl md:text-3xl font-black text-slate-900 dark:text-white mt-1 tracking-tight">
-            Market Intelligence
+          <h1 className="text-xl md:text-2xl font-bold text-slate-900 dark:text-[#F5F5F5] tracking-tight uppercase">
+            Market News Feed
           </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-1.5 max-w-xl hidden md:block">
-            Real-time global coverage aggregated from premium networks and macroeconomic schedules.
+          <p className="text-xs text-slate-500 dark:text-[#A3A3A3] font-medium mt-1 max-w-xl hidden md:block">
+            Dense real-time global coverage aggregated from financial networks & macroeconomic schedules.
           </p>
         </div>
       </div>

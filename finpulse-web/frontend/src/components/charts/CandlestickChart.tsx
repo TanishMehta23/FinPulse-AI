@@ -23,6 +23,7 @@ import {
   calculateStochastic,
   calculateATR,
 } from "../../utils/indicators";
+import toast from "react-hot-toast";
 import { X } from "lucide-react";
 
 const findClosestData = (data: any[] | undefined, targetTime: number): any => {
@@ -509,6 +510,10 @@ export default function CandlestickChart({
       sma: calculateSMA(displayCompareCandles, 20),
       vwap: calculateVWAP(displayCompareCandles),
       bb: calculateBollingerBands(displayCompareCandles, 20, 2),
+      rsi: calculateRSI(displayCompareCandles, 14),
+      macd: calculateMACD(displayCompareCandles),
+      stoch: calculateStochastic(displayCompareCandles),
+      atr: calculateATR(displayCompareCandles)
     };
   }, [displayCompareCandles]);
 
@@ -583,6 +588,7 @@ export default function CandlestickChart({
     link.download = `${symbol || compareSymbol || "chart"}_screenshot.png`;
     link.href = dataUrl;
     link.click();
+    toast.success("Chart screenshot downloaded!");
   }, [symbol, compareSymbol]);
 
   // Load Compare candles & fundamentals
@@ -610,8 +616,11 @@ export default function CandlestickChart({
               open: Number(q.open),
               high: Number(q.high),
               low: Number(q.low),
-              close: Number(q.close)
-            }));
+              close: Number(q.close),
+              volume: q.volume ? Number(q.volume) : 0
+            }))
+            .sort((a: any, b: any) => a.time - b.time)
+            .filter((item: any, idx: number, arr: any[]) => idx === 0 || item.time > arr[idx - 1].time);
           setCompareCandles(mapped);
         }
       } catch (err) {
@@ -1031,24 +1040,25 @@ export default function CandlestickChart({
           candleSeriesRef.current.update(lastCandle);
         }
 
+        let updatedMeta: any = null;
         setMeta(prevMeta => {
           const delta = newClose - (prevMeta.price || oldClose);
           const newPrice = newClose;
           const newChange = prevMeta.change + delta;
           const newChangePercent = (newChange / (newPrice - newChange)) * 100;
 
-          const updatedMeta = {
+          updatedMeta = {
             ...prevMeta,
             price: newPrice,
             change: newChange,
             changePercent: newChangePercent
           };
-
-          if (onMetaLoaded) {
-            onMetaLoaded(updatedMeta);
-          }
           return updatedMeta;
         });
+
+        if (onMetaLoaded && updatedMeta) {
+          onMetaLoaded(updatedMeta);
+        }
 
         next[lastIndex] = lastCandle;
         return next;
@@ -1069,9 +1079,10 @@ export default function CandlestickChart({
         if (fundamentalsResponse) {
           setFundamentals(fundamentalsResponse);
 
+          let updatedMeta: any = null;
           setMeta(prevMeta => {
             const newPrice = fundamentalsResponse.price || prevMeta.price;
-            const updatedMeta = {
+            updatedMeta = {
               ...prevMeta,
               name: fundamentalsResponse.name || prevMeta.name,
               price: newPrice,
@@ -1081,11 +1092,12 @@ export default function CandlestickChart({
               currency: fundamentalsResponse.currency || prevMeta.currency,
               performance: fundamentalsResponse.performance || prevMeta.performance
             };
-            if (onMetaLoaded) {
-              onMetaLoaded(updatedMeta);
-            }
             return updatedMeta;
           });
+
+          if (onMetaLoaded && updatedMeta) {
+            onMetaLoaded(updatedMeta);
+          }
 
           setCandles(prev => {
             if (!prev.length) return prev;
@@ -1121,9 +1133,10 @@ export default function CandlestickChart({
   useEffect(() => {
     if (!liveQuote || !candles.length) return;
 
+    let updatedMeta: any = null;
     setMeta(prevMeta => {
       const newPrice = liveQuote.price || prevMeta.price;
-      const updatedMeta = {
+      updatedMeta = {
         ...prevMeta,
         price: newPrice,
         change: liveQuote.change !== undefined ? liveQuote.change : prevMeta.change,
@@ -1131,11 +1144,12 @@ export default function CandlestickChart({
         marketState: liveQuote.marketState || prevMeta.marketState,
         currency: liveQuote.currency || prevMeta.currency
       };
-      if (onMetaLoaded) {
-        onMetaLoaded(updatedMeta);
-      }
       return updatedMeta;
     });
+
+    if (onMetaLoaded && updatedMeta) {
+      onMetaLoaded(updatedMeta);
+    }
 
     setCandles(prev => {
       if (!prev.length) return prev;
@@ -1348,6 +1362,9 @@ export default function CandlestickChart({
       const gridColorVal = isDark ? "rgba(255, 255, 255, 0.05)" : "rgba(30, 41, 59, 0.04)";
       const isComparison = pane === "Comparison";
 
+      // Clear any previous chart canvases or orphaned elements from this container
+      containerEl.innerHTML = "";
+
       // Create sub-chart pane
       const paneChart = createChart(containerEl, {
         layout: {
@@ -1412,14 +1429,21 @@ export default function CandlestickChart({
 
         const addCompareIndicatorLine = (lineData: { time: number; value: number }[], color: string, style?: any) => {
           if (!lineData || !lineData.length) return;
+          const cleanLineData = lineData
+            .filter(d => d && typeof d.time === "number" && typeof d.value === "number" && !isNaN(d.value))
+            .sort((a, b) => a.time - b.time)
+            .filter((d, i, arr) => i === 0 || d.time > arr[i - 1].time);
+          if (!cleanLineData.length) return;
+
           const lineSeries = paneChart.addLineSeries({
             color,
             lineWidth: settings.lineThickness || 2,
             lineStyle: style ?? LineStyle.Solid,
             priceLineVisible: false,
             lastValueVisible: false,
+            priceScaleId: "right",
           });
-          lineSeries.setData(lineData as any);
+          lineSeries.setData(cleanLineData as any);
         };
 
         if (activeOverlays.includes("EMA 20") && compareIndicatorData.ema20) {
@@ -1637,8 +1661,8 @@ export default function CandlestickChart({
       if (!container) return;
       const newWidth = container.clientWidth;
       if (Math.abs(newWidth - lastSubWidth) > 3) {
-        activePanes.forEach(pane => {
-          const paneChart = subChartsRef.current[pane];
+        Object.keys(subChartsRef.current).forEach(paneKey => {
+          const paneChart = subChartsRef.current[paneKey];
           if (paneChart) {
             paneChart.applyOptions({ width: newWidth });
           }
@@ -1653,11 +1677,11 @@ export default function CandlestickChart({
 
     return () => {
       resizeObserver.disconnect();
-      activePanes.forEach(pane => {
-        const paneChart = subChartsRef.current[pane];
+      Object.keys(subChartsRef.current).forEach(paneKey => {
+        const paneChart = subChartsRef.current[paneKey];
         if (paneChart) {
-          if (paneChart._cleanupSync) {
-            paneChart._cleanupSync();
+          if ((paneChart as any)._cleanupSync) {
+            (paneChart as any)._cleanupSync();
           }
           paneChart.remove();
         }

@@ -1,14 +1,11 @@
 // src/App.tsx
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import Header from './components/layout/header';
 import Footer from './components/layout/footer';
-import InvestmentCalculator from './features/dashboard/components/InvestmentCalculator';
-import MarketScreeners from './features/dashboard/components/MarketScreeners';
 import Watchlist from './features/dashboard/components/Watchlist';
-import MarketFeedStream from './features/dashboard/components/MarketFeedStream';
 import LoginModal from './features/auth/LoginModal';
-import { Toaster, toast } from 'react-hot-toast';
+import { Toaster } from 'react-hot-toast';
 import PortfolioDashboard from './features/portfolio/components/PortfolioDashboard';
 import PerformanceComparison from './features/dashboard/components/PerformanceComparison';
 import AssetDetails from "./pages/AssetDetails";
@@ -19,30 +16,43 @@ import Profile from "./pages/Profile";
 import Preferences from "./profile/pages/Preferences";
 import AssetChartModal from "./components/charts/AssetChartModal";
 import { useChart } from "./context/ChartContext";
-import AIMarketSentiment from "./features/dashboard/components/AIMarketSentiment";
-import MarketExplanation from "./features/dashboard/components/MarketExplanation";
-
-// New Pulse Page Components
-import FearGreedIndex from './features/dashboard/components/FearGreedIndex';
-import AIBulletSummary from './features/dashboard/components/AIBulletSummary';
-import AIPickOfTheDay from './features/dashboard/components/AIPickOfTheDay';
-import { GlobalMarketClock } from './features/dashboard/components/GlobalMarketClock';
-
-// Stock Screener Page Component Integration
 import StockScreener from './pages/StockScreener';
 import Pulse from './pages/Pulse';
 
-// New Footer Pages
+// Footer Pages
 import About from "./pages/About";
 import Contact from "./pages/Contact";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
+import SystemStatus from "./pages/SystemStatus";
+import ApiDocumentation from "./pages/ApiDocumentation";
+import CookiePolicy from "./pages/CookiePolicy";
+import RiskDisclosure from "./pages/RiskDisclosure";
 import { useTheme } from './context/ThemeContext';
 import { profileService } from './profile/services/profileService';
+
+// DRY Protected Route Wrapper
+function ProtectedRoute({ isLoggedIn, children }: { isLoggedIn: boolean; children: React.ReactNode }) {
+  if (!isLoggedIn) {
+    return <Navigate to="/pulse" replace />;
+  }
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
+      transition={{ duration: 0.2 }}
+      className="w-full"
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 export default function App() {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
+  const isSecondaryPage = location.pathname !== '/pulse' && !location.pathname.startsWith('/screener');
   const [isLoggedIn, setIsLoggedIn] = useState(() => !!localStorage.getItem('finpulse_token'));
 
   // Scroll to top on navigation/page change
@@ -50,10 +60,11 @@ export default function App() {
     window.scrollTo(0, 0);
   }, [location.pathname]);
 
-  // Sync saved theme preference from database profile on load (once on mount)
+  // Sync saved theme preference from database profile on load if no local theme was explicitly set
   useEffect(() => {
     const token = localStorage.getItem('finpulse_token') || localStorage.getItem('finpulse-token');
-    if (token) {
+    const localTheme = localStorage.getItem('theme');
+    if (token && !localTheme) {
       profileService.getProfile()
         .then(data => {
           if (data?.preferences?.theme) {
@@ -61,13 +72,10 @@ export default function App() {
           }
         })
         .catch(() => {
-          // Silently ignore — stale token is handled when user is forced to re-enter PIN
+          // Stale token handled on re-auth
         });
     }
-  }, []);
-
-  // The state for managing selected region
-  const [marketRegion, setMarketRegion] = useState<"india" | "us">("india");
+  }, [setTheme]);
 
   // Set this to false so it doesn't pop up on load
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
@@ -97,7 +105,7 @@ export default function App() {
     closeChart,
   } = useChart();
 
-  // Integrated 'screener' navigation matrix item
+  // Navigation items
   const navItems = [
     { id: 'pulse', label: 'Pulse' },
     { id: 'screener', label: 'Screener' },
@@ -107,18 +115,8 @@ export default function App() {
     { id: "news", label: "News" },
   ];
 
-  // The Interceptor: If not logged in, any click forces the modal open
-  const handleProtectedAction = (e: React.MouseEvent) => {
-    if (!isLoggedIn) {
-      e.preventDefault();
-      e.stopPropagation();
-      setIsLoginModalOpen(true);
-    }
-  };
-
-
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-night-900 text-slate-900 dark:text-slate-200 transition-colors duration-300 overflow-x-clip">
+    <div className={`min-h-screen flex flex-col bg-slate-50 dark:bg-night-900 text-slate-900 dark:text-slate-200 transition-colors duration-300 overflow-x-clip ${isSecondaryPage ? 'secondary-page' : ''}`}>
 
       <LoginModal
         isOpen={isLoginModalOpen}
@@ -136,20 +134,11 @@ export default function App() {
 
       <div className="fixed inset-0 pointer-events-none z-0 bg-grid opacity-60 dark:opacity-40 transition-opacity" />
 
-      {/* We leave Header unprotected here so users can toggle Dark Mode and click "Sign In" naturally */}
+      {/* Header */}
       <Header
         navItems={navItems}
         isLoggedIn={isLoggedIn}
         onLoginClick={() => setIsLoginModalOpen(true)}
-        onLogoutClick={() => {
-          localStorage.removeItem('finpulse_token');
-          localStorage.removeItem('finpulse-token');
-          localStorage.removeItem('finpulse-user');
-          sessionStorage.removeItem('finpulse_pin_verified');
-          setIsLoggedIn(false);
-          toast.success("Logged out successfully");
-          window.location.href = '/';
-        }}
       />
 
       <Toaster
@@ -195,32 +184,15 @@ export default function App() {
         <AnimatePresence mode="wait">
           <Routes location={location} key={location.pathname}>
 
-            <Route
-              path="/"
-              element={<Navigate to="/pulse" />}
-            />
-
-            <Route
-              path="/pulse"
-              element={<Pulse />}
-            />
+            <Route path="/" element={<Navigate to="/pulse" />} />
+            <Route path="/pulse" element={<Pulse />} />
 
             <Route
               path="/watchlist"
               element={
-                isLoggedIn ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                    className="w-full"
-                  >
-                    <Watchlist />
-                  </motion.div>
-                ) : (
-                  <Navigate to="/pulse" replace />
-                )
+                <ProtectedRoute isLoggedIn={isLoggedIn}>
+                  <Watchlist />
+                </ProtectedRoute>
               }
             />
 
@@ -242,38 +214,18 @@ export default function App() {
             <Route
               path="/portfolio"
               element={
-                isLoggedIn ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                    className="w-full"
-                  >
-                    <PortfolioDashboard />
-                  </motion.div>
-                ) : (
-                  <Navigate to="/pulse" replace />
-                )
+                <ProtectedRoute isLoggedIn={isLoggedIn}>
+                  <PortfolioDashboard />
+                </ProtectedRoute>
               }
             />
 
             <Route
               path="/performance"
               element={
-                isLoggedIn ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                    className="w-full"
-                  >
-                    <PerformanceComparison />
-                  </motion.div>
-                ) : (
-                  <Navigate to="/pulse" replace />
-                )
+                <ProtectedRoute isLoggedIn={isLoggedIn}>
+                  <PerformanceComparison />
+                </ProtectedRoute>
               }
             />
 
@@ -292,8 +244,6 @@ export default function App() {
               }
             />
 
-
-
             <Route
               path="/news"
               element={
@@ -311,72 +261,36 @@ export default function App() {
             <Route
               path="/profile"
               element={
-                isLoggedIn ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <Profile />
-                  </motion.div>
-                ) : (
-                  <Navigate to="/pulse" replace />
-                )
+                <ProtectedRoute isLoggedIn={isLoggedIn}>
+                  <Profile />
+                </ProtectedRoute>
               }
             />
 
             <Route
               path="/profile/edit"
               element={
-                isLoggedIn ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <Profile />
-                  </motion.div>
-                ) : (
-                  <Navigate to="/pulse" replace />
-                )
+                <ProtectedRoute isLoggedIn={isLoggedIn}>
+                  <Profile />
+                </ProtectedRoute>
               }
             />
 
             <Route
               path="/profile/security"
               element={
-                isLoggedIn ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <Profile />
-                  </motion.div>
-                ) : (
-                  <Navigate to="/pulse" replace />
-                )
+                <ProtectedRoute isLoggedIn={isLoggedIn}>
+                  <Profile />
+                </ProtectedRoute>
               }
             />
 
             <Route
               path="/profile/preferences"
               element={
-                isLoggedIn ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <Preferences />
-                  </motion.div>
-                ) : (
-                  <Navigate to="/pulse" replace />
-                )
+                <ProtectedRoute isLoggedIn={isLoggedIn}>
+                  <Preferences />
+                </ProtectedRoute>
               }
             />
 
@@ -385,6 +299,10 @@ export default function App() {
             <Route path="/contact" element={<Contact />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
+            <Route path="/status" element={<SystemStatus />} />
+            <Route path="/api-docs" element={<ApiDocumentation />} />
+            <Route path="/cookies" element={<CookiePolicy />} />
+            <Route path="/risk-disclosure" element={<RiskDisclosure />} />
           </Routes>
         </AnimatePresence>
       </main>
